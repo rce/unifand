@@ -53,4 +53,21 @@ impl HidTransport {
         self.device.write(data)?;
         Ok(())
     }
+
+    /// Raw write for devices using Report ID 0 (e.g. SLV3H).
+    pub fn raw_write(&self, data: &[u8]) -> Result<()> {
+        self.device.write(data)?;
+        Ok(())
+    }
+
+    /// Raw read with configurable timeout and buffer size.
+    pub fn raw_read(&self, len: usize, timeout_ms: i32) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        let n = self.device.read_timeout(&mut buf, timeout_ms)?;
+        if n == 0 {
+            return Err(crate::Error::Timeout);
+        }
+        buf.truncate(n);
+        Ok(buf)
+    }
 }

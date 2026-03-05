@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand};
 use unifand::device::DeviceKind;
+use unifand::devices::slv3h::Slv3hController;
 use unifand::devices::tl_fan::TlFanController;
 use unifand::devices::tl_lcd_wired::TlLcdWired;
 use unifand::devices::tl_lcd_wireless::TlLcdWireless;
 use unifand::protocol::lcd::{LcdControlSetting, LcdMode, ScreenRotation};
+use unifand::protocol::slv3h;
 
 #[derive(Parser)]
 #[command(name = "unifanctl", about = "Control Lian Li Uni Fans")]
@@ -16,10 +18,15 @@ struct Cli {
 enum Commands {
     /// List all detected Lian Li devices
     Discover,
-    /// Fan control commands
+    /// Fan control commands (wired TL Fan Controller)
     Fan {
         #[command(subcommand)]
         command: FanCommands,
+    },
+    /// Wireless fan control (SLV3H hub + RF dongles)
+    Wireless {
+        #[command(subcommand)]
+        command: WirelessCommands,
     },
     /// LCD display commands
     Lcd {
@@ -40,6 +47,21 @@ enum FanCommands {
     },
     /// Blink a port's LEDs for identification
     Blink { port: u8 },
+}
+
+#[derive(Subcommand)]
+enum WirelessCommands {
+    /// Initialize and show hub info
+    Init,
+    /// Show all wireless devices (fans, strimers, etc.)
+    Status,
+    /// Set fan PWM for all fans on a device (by MAC address)
+    SetSpeed {
+        /// Device MAC address (e.g. "aa:bb:cc:dd:ee:ff")
+        mac: String,
+        /// PWM value 0-100
+        pwm: u8,
+    },
 }
 
 #[derive(Subcommand)]
@@ -71,8 +93,8 @@ fn main() -> anyhow::Result<()> {
             let devices = unifand::discover()?;
             let fan_info = devices
                 .iter()
-                .find(|d| matches!(d.kind, DeviceKind::TlFanController | DeviceKind::Slv3h))
-                .ok_or_else(|| anyhow::anyhow!("No fan controller found"))?;
+                .find(|d| matches!(d.kind, DeviceKind::TlFanController))
+                .ok_or_else(|| anyhow::anyhow!("No wired fan controller found"))?;
             let controller = TlFanController::open(&api, fan_info)?;
 
             match command {
@@ -96,6 +118,66 @@ fn main() -> anyhow::Result<()> {
                 FanCommands::Blink { port } => {
                     controller.blink_port(port)?;
                     println!("Blinking port {port}");
+                }
+            }
+        }
+        Commands::Wireless { command } => {
+            let api = hidapi::HidApi::new()?;
+            let devices = unifand::discover()?;
+            let hub_info = devices
+                .iter()
+                .find(|d| matches!(d.kind, DeviceKind::Slv3h))
+                .ok_or_else(|| anyhow::anyhow!("No SLV3H wireless hub found"))?;
+
+            let mut controller = Slv3hController::open(&api, hub_info)?;
+
+            match command {
+                WirelessCommands::Init => {
+                    let master = controller.init()?;
+                    println!("Master MAC: {}", slv3h::format_mac(&master.mac));
+                    println!("System clock: {}", master.sys_clock);
+                    println!("Firmware: {:#06x}", master.firmware_version);
+                }
+                WirelessCommands::Status => {
+                    controller.init()?;
+                    let rf_devices = controller.get_device_list()?;
+                    if rf_devices.is_empty() {
+                        println!("No wireless devices found.");
+                    } else {
+                        let master = controller.master_info().unwrap();
+                        println!("Master: {}", slv3h::format_mac(&master.mac));
+                        println!();
+                        for dev in &rf_devices {
+                            println!(
+                                "Device {} — type: {:?}, fans: {}, bound: {}",
+                                slv3h::format_mac(&dev.mac),
+                                dev.dev_type,
+                                dev.fan_num,
+                                dev.bound,
+                            );
+                            for i in 0..dev.fan_num as usize {
+                                if i < 4 {
+                                    println!(
+                                        "  Fan {}: RPM={}, PWM={}",
+                                        i, dev.fan_speeds[i], dev.fan_pwm[i]
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                WirelessCommands::SetSpeed { mac, pwm } => {
+                    controller.init()?;
+                    let rf_devices = controller.get_device_list()?;
+
+                    let target = rf_devices
+                        .iter()
+                        .find(|d| slv3h::format_mac(&d.mac) == mac)
+                        .ok_or_else(|| anyhow::anyhow!("Device {mac} not found"))?;
+
+                    let pwm_all = [pwm; 4];
+                    controller.set_fan_pwm(target, &pwm_all)?;
+                    println!("Set all fans on {mac} to PWM {pwm}");
                 }
             }
         }
