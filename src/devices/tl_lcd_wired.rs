@@ -21,10 +21,12 @@ impl TlLcdWired {
         // The device needs time to prepare the response.
         self.transport.lcd_write(&packets[0].to_bytes())?;
         let resp = self.transport.raw_read(64, 1000)?;
+        eprintln!("handshake raw response ({} bytes): {:02x?}", resp.len(), &resp[..resp.len().min(20)]);
         let mut buf = [0u8; 64];
         let len = resp.len().min(64);
         buf[..len].copy_from_slice(&resp[..len]);
         let resp = LcdPacket::from_bytes(&buf)?;
+        eprintln!("parsed packet: cmd={:#04x} data_size={} pkt_num={} data={:02x?}", resp.command, resp.data_size, resp.packet_number, &resp.data);
         lcd::parse_handshake(&resp.data)
     }
 

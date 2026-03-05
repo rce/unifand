@@ -136,7 +136,10 @@ fn open_lcd() -> anyhow::Result<Lcd> {
     {
         let api = hidapi::HidApi::new()?;
         let lcd = TlLcdWired::open(&api, lcd_info)?;
-        lcd.handshake()?;
+        match lcd.handshake() {
+            Ok(info) => eprintln!("Handshake OK: mode={}, frame_index={}", info.mode, info.frame_index),
+            Err(e) => eprintln!("Handshake failed: {e}"),
+        }
         println!("Found wired LCD");
         return Ok(Lcd::Wired(lcd));
     }
