@@ -394,7 +394,9 @@ fn main() -> anyhow::Result<()> {
                                 Ok(frame) => {
                                     let result = match &lcd {
                                         Lcd::Wireless(w) => w.push_jpg(&frame),
-                                        Lcd::Wired(w) => w.send_sync_jpg(&frame),
+                                        // Use send_jpg (with ACK) not send_sync_jpg —
+                                        // SyncJPG is for multi-LCD sync setups
+                                        Lcd::Wired(w) => w.send_jpg(&frame),
                                     };
                                     if let Err(e) = result {
                                         eprintln!("Error pushing frame: {e}");
