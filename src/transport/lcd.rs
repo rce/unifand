@@ -15,6 +15,9 @@ const ENDPOINT_OUT: u8 = 0x01;
 const ENDPOINT_IN: u8 = 0x81;
 const INTERFACE: u8 = 0;
 const TIMEOUT: Duration = Duration::from_millis(500);
+/// The C# app always sends exactly 102400 bytes per PushJpg transfer
+/// (512-byte encrypted header + payload zero-padded to fill).
+const IMG_TRANSFER_LEN: usize = 102400;
 /// LCD command types (from decompiled lcd207 CmdType enum).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
@@ -75,9 +78,10 @@ impl LcdTransport {
     }
 
     /// Push a JPG image to the LCD.
-    /// Protocol: encrypted header (512 bytes) + raw JPG data.
+    /// Protocol: fixed 102400-byte transfer = encrypted header (512 bytes) + raw JPG data + zero padding.
+    /// The C# app always sends exactly 102400 bytes; the device reads the actual
+    /// payload length from the encrypted header.
     pub fn push_jpg(&self, jpg_data: &[u8]) -> Result<()> {
-        // Build header with data length only (image goes after the encrypted header)
         let mut buf = usb::build_command_buffer(LcdCmd::PushJpg as u8, None);
         let len = jpg_data.len() as u32;
         buf[8] = (len >> 24) as u8;
@@ -86,13 +90,23 @@ impl LcdTransport {
         buf[11] = (len & 0xFF) as u8;
         let encrypted = usb::encrypt_pkcs7(&buf);
 
-        // Full transfer: encrypted header + raw image data
-        let mut transfer = Vec::with_capacity(encrypted.len() + jpg_data.len());
-        transfer.extend_from_slice(&encrypted);
-        transfer.extend_from_slice(jpg_data);
+        // Fixed-size transfer: encrypted header + jpg data + zero padding to 102400 bytes
+        let mut transfer = vec![0u8; IMG_TRANSFER_LEN];
+        transfer[..encrypted.len()].copy_from_slice(&encrypted);
+        transfer[encrypted.len()..encrypted.len() + jpg_data.len()]
+            .copy_from_slice(jpg_data);
 
         self.write_bulk(&transfer)?;
+
+        // Drain any pending response (like C# CheckImg does)
+        self.drain_response();
         Ok(())
+    }
+
+    /// Read and discard any pending response from the device.
+    fn drain_response(&self) {
+        let mut buf = [0u8; 512];
+        let _ = self.handle.read_bulk(ENDPOINT_IN, &mut buf, Duration::from_millis(50));
     }
 
     /// Read a response from the LCD (512 bytes max).
@@ -106,7 +120,13 @@ impl LcdTransport {
     }
 
     fn write_bulk(&self, data: &[u8]) -> Result<()> {
-        self.handle.write_bulk(ENDPOINT_OUT, data, TIMEOUT)?;
+        // Use longer timeout for large transfers (100KB image data)
+        let timeout = if data.len() > 1024 {
+            Duration::from_millis(2000)
+        } else {
+            TIMEOUT
+        };
+        self.handle.write_bulk(ENDPOINT_OUT, data, timeout)?;
         Ok(())
     }
 }

@@ -74,6 +74,8 @@ enum WirelessCommands {
 
 #[derive(Subcommand)]
 enum DisplayCommands {
+    /// Reboot the LCD (useful to recover from stuck state)
+    Reset,
     /// Set LCD brightness (0-255)
     Brightness { level: u8 },
     /// Rotate LCD display (0-3: 0°, 90°, 180°, 270°)
@@ -107,7 +109,7 @@ fn convert_image_to_jpg(path: &str) -> anyhow::Result<Vec<u8>> {
     let output = Command::new("ffmpeg")
         .args([
             "-i", path,
-            "-vf", "scale=400:400:force_original_aspect_ratio=decrease,pad=400:400:(ow-iw)/2:(oh-ih)/2",
+            "-vf", "scale=400:400:force_original_aspect_ratio=increase,crop=400:400",
             "-frames:v", "1",
             "-f", "mjpeg",
             "-q:v", "5",
@@ -235,6 +237,10 @@ fn main() -> anyhow::Result<()> {
             let lcd = LcdTransport::open()?;
 
             match command {
+                DisplayCommands::Reset => {
+                    lcd.send_cmd_bare(LcdCmd::Reboot)?;
+                    println!("Sent reboot command to display");
+                }
                 DisplayCommands::Brightness { level } => {
                     lcd.send_cmd(LcdCmd::Brightness, level)?;
                     println!("Set display brightness to {level}");
@@ -252,6 +258,12 @@ fn main() -> anyhow::Result<()> {
                     println!("Pushed image to display ({} bytes)", jpg_data.len());
                 }
                 DisplayCommands::Video { path, fps, r#loop } => {
+                    if fps > 60 {
+                        anyhow::bail!("FPS too high (max 60) — the LCD can't keep up and will lock up");
+                    }
+                    if fps > 30 {
+                        eprintln!("Warning: FPS above 30 may cause the LCD to lock up");
+                    }
                     lcd.send_cmd(LcdCmd::SetFrameRate, fps)?;
 
                     let frame_duration = std::time::Duration::from_millis(1000 / fps as u64);
@@ -260,7 +272,7 @@ fn main() -> anyhow::Result<()> {
                         let mut child = Command::new("ffmpeg")
                             .args([
                                 "-i", &path,
-                                "-vf", "scale=400:400:force_original_aspect_ratio=decrease,pad=400:400:(ow-iw)/2:(oh-ih)/2",
+                                "-vf", "scale=400:400:force_original_aspect_ratio=increase,crop=400:400",
                                 "-r", &fps.to_string(),
                                 "-f", "mjpeg",
                                 "-q:v", "5",
