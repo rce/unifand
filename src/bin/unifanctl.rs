@@ -68,7 +68,12 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Fan { command } => {
             let api = hidapi::HidApi::new()?;
-            let controller = TlFanController::open_first(&api)?;
+            let devices = unifand::discover()?;
+            let fan_info = devices
+                .iter()
+                .find(|d| matches!(d.kind, DeviceKind::TlFanController | DeviceKind::Slv3h))
+                .ok_or_else(|| anyhow::anyhow!("No fan controller found"))?;
+            let controller = TlFanController::open(&api, fan_info)?;
 
             match command {
                 FanCommands::Status => {

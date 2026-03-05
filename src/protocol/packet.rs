@@ -34,23 +34,26 @@ impl LedPacket {
         buf
     }
 
+    /// Parse from raw bytes. Handles both formats:
+    /// - With report ID (Windows/write): [report_id, command, ...]
+    /// - Without report ID (Linux hidapi read): [command, ...]
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
-        if bytes.len() < LED_HEADER_LEN {
+        if bytes.len() < LED_HEADER_LEN - 1 {
             return Err(crate::Error::InvalidResponse(
                 "packet too short".into(),
             ));
         }
-        if bytes[0] != LED_REPORT_ID {
-            return Err(crate::Error::InvalidResponse(format!(
-                "expected report ID {:#04x}, got {:#04x}",
-                LED_REPORT_ID, bytes[0]
-            )));
-        }
-        let len = bytes[5] as usize;
-        let data = bytes[6..6 + len.min(bytes.len() - 6)].to_vec();
+        // If first byte is the report ID, skip it
+        let b = if bytes[0] == LED_REPORT_ID {
+            &bytes[1..]
+        } else {
+            bytes
+        };
+        let len = (b[4] as usize).min(b.len().saturating_sub(5));
+        let data = b[5..5 + len].to_vec();
         Ok(Self {
-            command: bytes[1],
-            packet_number: (bytes[3] as u16) << 8 | bytes[4] as u16,
+            command: b[0],
+            packet_number: (b[2] as u16) << 8 | b[3] as u16,
             data,
         })
     }
@@ -101,26 +104,28 @@ impl LcdPacket {
         buf
     }
 
+    /// Parse from raw bytes. Handles both formats:
+    /// - With report ID (Windows/write): [report_id, command, ...]
+    /// - Without report ID (Linux hidapi read): [command, ...]
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
-        if bytes.len() < LCD_HEADER_LEN {
+        if bytes.len() < LCD_HEADER_LEN - 1 {
             return Err(crate::Error::InvalidResponse(
                 "packet too short".into(),
             ));
         }
-        if bytes[0] != LCD_REPORT_ID {
-            return Err(crate::Error::InvalidResponse(format!(
-                "expected report ID {:#04x}, got {:#04x}",
-                LCD_REPORT_ID, bytes[0]
-            )));
-        }
-        let data_size = u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
+        let b = if bytes[0] == LCD_REPORT_ID {
+            &bytes[1..]
+        } else {
+            bytes
+        };
+        let data_size = u32::from_be_bytes([b[1], b[2], b[3], b[4]]);
         let packet_number =
-            (bytes[6] as u32) << 16 | (bytes[7] as u32) << 8 | bytes[8] as u32;
-        let payload_len = ((bytes[9] as usize) << 8 | bytes[10] as usize)
-            .min(bytes.len() - LCD_HEADER_LEN);
-        let data = bytes[11..11 + payload_len].to_vec();
+            (b[5] as u32) << 16 | (b[6] as u32) << 8 | b[7] as u32;
+        let payload_len = ((b[8] as usize) << 8 | b[9] as usize)
+            .min(b.len().saturating_sub(10));
+        let data = b[10..10 + payload_len].to_vec();
         Ok(Self {
-            command: bytes[1],
+            command: b[0],
             data_size,
             packet_number,
             data,
@@ -180,10 +185,17 @@ mod tests {
     }
 
     #[test]
-    fn led_packet_rejects_wrong_report_id() {
+    fn led_packet_parses_without_report_id() {
+        // Linux hidapi read() strips report ID, so byte[0] is command
         let mut bytes = [0u8; LED_PACKET_LEN];
-        bytes[0] = 0x02; // wrong
-        assert!(LedPacket::from_bytes(&bytes).is_err());
+        bytes[0] = 0xA1; // command directly (no report ID)
+        bytes[4] = 3;    // payload length (shifted by 1 vs with-report-id)
+        bytes[5] = 0xDE;
+        bytes[6] = 0xAD;
+        bytes[7] = 0xBE;
+        let pkt = LedPacket::from_bytes(&bytes).unwrap();
+        assert_eq!(pkt.command, 0xA1);
+        assert_eq!(pkt.data, vec![0xDE, 0xAD, 0xBE]);
     }
 
     #[test]
