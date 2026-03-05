@@ -1,9 +1,11 @@
 # Lian Li Uni Fan - unifand
-# TL Fan Controller (wired)
+# TL Fan Controller (wired HID)
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", MODE="0660", TAG+="uaccess"
-# TL LCD Wired
+# TL LCD Wired (HID)
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="04fc", ATTRS{idProduct}=="7393", MODE="0660", TAG+="uaccess"
-# TL LCD Wireless
+# SLV3H Wireless Hub (HID interface for fan/LED control)
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="2107", MODE="0660", TAG+="uaccess"
+# TL LCD Wireless (raw USB for video/images)
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="1cbe", ATTRS{idProduct}=="0006", MODE="0660", TAG+="uaccess"
 # Wireless RF TX Dongle
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8040", MODE="0660", TAG+="uaccess"

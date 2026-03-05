@@ -12,8 +12,14 @@ pub mod known {
     pub const TL_LCD_WIRED_VID: u16 = 0x04FC;
     pub const TL_LCD_WIRED_PID: u16 = 0x7393;
 
-    pub const TL_LCD_WIRELESS_VID: u16 = 0x1CBE;
-    pub const TL_LCD_WIRELESS_PID: u16 = 0x0006;
+    // The wireless LCD has two USB devices:
+    // 1CBE:0006 — raw USB LCD (bulk transfers, for video/images)
+    // 1A86:2107 — SLV3H HID interface (for fan/LED control)
+    pub const TL_LCD_WIRELESS_USB_VID: u16 = 0x1CBE;
+    pub const TL_LCD_WIRELESS_USB_PID: u16 = 0x0006;
+
+    pub const SLV3H_VID: u16 = 0x1A86;
+    pub const SLV3H_PID: u16 = 0x2107;
 
     pub const RF_TX_VID: u16 = 0x0416;
     pub const RF_TX_PID: u16 = 0x8040;
@@ -27,6 +33,7 @@ pub enum DeviceKind {
     TlFanController,
     TlLcdWired,
     TlLcdWireless,
+    Slv3h,
     RfTxDongle,
     RfRxDongle,
 }
@@ -37,6 +44,7 @@ impl fmt::Display for DeviceKind {
             DeviceKind::TlFanController => write!(f, "TL Fan Controller"),
             DeviceKind::TlLcdWired => write!(f, "TL LCD (Wired)"),
             DeviceKind::TlLcdWireless => write!(f, "TL LCD (Wireless)"),
+            DeviceKind::Slv3h => write!(f, "SLV3H Wireless Hub"),
             DeviceKind::RfTxDongle => write!(f, "RF TX Dongle"),
             DeviceKind::RfRxDongle => write!(f, "RF RX Dongle"),
         }
@@ -74,7 +82,7 @@ pub fn discover() -> Result<Vec<DeviceInfo>> {
                 DeviceKind::TlFanController
             }
             (known::TL_LCD_WIRED_VID, known::TL_LCD_WIRED_PID) => DeviceKind::TlLcdWired,
-            (known::TL_LCD_WIRELESS_VID, known::TL_LCD_WIRELESS_PID) => DeviceKind::TlLcdWireless,
+            (known::SLV3H_VID, known::SLV3H_PID) => DeviceKind::Slv3h,
             (known::RF_TX_VID, known::RF_TX_PID) => DeviceKind::RfTxDongle,
             (known::RF_RX_VID, known::RF_RX_PID) => DeviceKind::RfRxDongle,
             _ => continue,

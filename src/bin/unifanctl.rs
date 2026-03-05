@@ -98,7 +98,7 @@ fn main() -> anyhow::Result<()> {
             let devices = unifand::discover()?;
             let lcd_info = devices
                 .iter()
-                .find(|d| matches!(d.kind, DeviceKind::TlLcdWired | DeviceKind::TlLcdWireless))
+                .find(|d| matches!(d.kind, DeviceKind::TlLcdWired | DeviceKind::TlLcdWireless | DeviceKind::Slv3h))
                 .ok_or_else(|| anyhow::anyhow!("No LCD device found"))?;
 
             let api = hidapi::HidApi::new()?;
@@ -145,7 +145,7 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                DeviceKind::TlLcdWireless => {
+                DeviceKind::TlLcdWireless | DeviceKind::Slv3h => {
                     let lcd = TlLcdWireless::open(&api, lcd_info)?;
                     match command {
                         LcdCommands::Brightness { level } => {
