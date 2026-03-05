@@ -332,6 +332,9 @@ fn main() -> anyhow::Result<()> {
             let api = hidapi::HidApi::new()?;
             let lcd = TlLcdWired::open(&api, lcd_info)?;
 
+            // Always handshake first (C# does this on Open)
+            lcd.handshake()?;
+
             match command {
                 LcdCommands::Brightness { level } => {
                     lcd.set_control(&LcdControlSetting {
@@ -365,9 +368,19 @@ fn main() -> anyhow::Result<()> {
                     println!("Rotated LCD to {degrees} degrees");
                 }
                 LcdCommands::ShowImage { path } => {
-                    let jpg_data = std::fs::read(&path)?;
+                    let jpg_data = convert_image_to_jpg(&path)?;
                     lcd.send_jpg(&jpg_data)?;
-                    println!("Sent image {path} to LCD");
+                    // Tell the LCD to display the image we just pushed
+                    lcd.set_control(&LcdControlSetting {
+                        mode: LcdMode::ShowJpg,
+                        jpg_index: 0,
+                        brightness: 100,
+                        video_fps: 0,
+                        rotation: ScreenRotation::Deg0,
+                        enable_test: false,
+                        test_color: (0, 0, 0),
+                    })?;
+                    println!("Sent image {path} to LCD ({} bytes)", jpg_data.len());
                 }
             }
         }
