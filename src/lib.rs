@@ -1,4 +1,5 @@
 pub mod device;
+pub mod devices;
 pub mod error;
 pub mod protocol;
 pub mod transport;
