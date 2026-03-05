@@ -14,3 +14,4 @@ des = "0.8"
 cbc = "0.1"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+anyhow = "1"
