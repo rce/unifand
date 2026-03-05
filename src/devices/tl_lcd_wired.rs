@@ -17,8 +17,14 @@ impl TlLcdWired {
 
     pub fn handshake(&self) -> Result<lcd::HandshakeInfo> {
         let packets = lcd::handshake_packet();
-        let resp = self.transport.lcd_write_read(&packets[0].to_bytes())?;
-        let resp = LcdPacket::from_bytes(&resp)?;
+        // C# sends handshake as write-only, then reads separately with longer timeout.
+        // The device needs time to prepare the response.
+        self.transport.lcd_write(&packets[0].to_bytes())?;
+        let resp = self.transport.raw_read(64, 1000)?;
+        let mut buf = [0u8; 64];
+        let len = resp.len().min(64);
+        buf[..len].copy_from_slice(&resp[..len]);
+        let resp = LcdPacket::from_bytes(&buf)?;
         lcd::parse_handshake(&resp.data)
     }
 
