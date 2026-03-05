@@ -1,7 +1,7 @@
 use hidapi::HidApi;
 
 use crate::device::DeviceInfo;
-use crate::protocol::{lcd, packet::LcdPacket};
+use crate::protocol::lcd;
 use crate::transport::hid::HidTransport;
 use crate::Result;
 
@@ -17,17 +17,16 @@ impl TlLcdWired {
 
     pub fn handshake(&self) -> Result<lcd::HandshakeInfo> {
         let packets = lcd::handshake_packet();
-        // C# sends handshake as write-only, then reads separately with longer timeout.
-        // The device needs time to prepare the response.
         self.transport.lcd_write(&packets[0].to_bytes())?;
         let resp = self.transport.raw_read(64, 1000)?;
-        eprintln!("handshake raw response ({} bytes): {:02x?}", resp.len(), &resp[..resp.len().min(20)]);
-        let mut buf = [0u8; 64];
-        let len = resp.len().min(64);
-        buf[..len].copy_from_slice(&resp[..len]);
-        let resp = LcdPacket::from_bytes(&buf)?;
-        eprintln!("parsed packet: cmd={:#04x} data_size={} pkt_num={} data={:02x?}", resp.command, resp.data_size, resp.packet_number, &resp.data);
-        lcd::parse_handshake(&resp.data)
+        // Device response: [report_id, cmd, ...header..., data at byte 11+]
+        // The device doesn't fill in the payload length field, so read data
+        // directly from offset 11 (after report ID + 10-byte header).
+        let data_offset = if resp[0] == 0x02 { 11 } else { 10 };
+        if resp.len() <= data_offset {
+            return Err(crate::Error::InvalidResponse("handshake response too short".into()));
+        }
+        lcd::parse_handshake(&resp[data_offset..])
     }
 
     pub fn set_control(&self, setting: &lcd::LcdControlSetting) -> Result<()> {
