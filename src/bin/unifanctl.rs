@@ -1,11 +1,14 @@
+use std::io::Read;
+use std::process::{Command, Stdio};
+
 use clap::{Parser, Subcommand};
 use unifand::device::DeviceKind;
 use unifand::devices::slv3h::Slv3hController;
 use unifand::devices::tl_fan::TlFanController;
 use unifand::devices::tl_lcd_wired::TlLcdWired;
-use unifand::devices::tl_lcd_wireless::TlLcdWireless;
 use unifand::protocol::lcd::{LcdControlSetting, LcdMode, ScreenRotation};
 use unifand::protocol::slv3h;
+use unifand::transport::lcd::{LcdCmd, LcdTransport};
 
 #[derive(Parser)]
 #[command(name = "unifanctl", about = "Control Lian Li Uni Fans")]
@@ -28,10 +31,15 @@ enum Commands {
         #[command(subcommand)]
         command: WirelessCommands,
     },
-    /// LCD display commands
+    /// LCD display commands (wired HID)
     Lcd {
         #[command(subcommand)]
         command: LcdCommands,
+    },
+    /// Wireless LCD display commands (USB bulk)
+    Display {
+        #[command(subcommand)]
+        command: DisplayCommands,
     },
 }
 
@@ -65,6 +73,26 @@ enum WirelessCommands {
 }
 
 #[derive(Subcommand)]
+enum DisplayCommands {
+    /// Set LCD brightness (0-255)
+    Brightness { level: u8 },
+    /// Rotate LCD display (0-3: 0°, 90°, 180°, 270°)
+    Rotate { rotation: u8 },
+    /// Push an image to the LCD (any format, converted via ffmpeg to 400x400 JPG)
+    Image { path: String },
+    /// Stream a video to the LCD (any format, converted via ffmpeg to 400x400 JPG frames)
+    Video {
+        path: String,
+        /// Target FPS (default: 20)
+        #[arg(long, default_value_t = 20)]
+        fps: u8,
+        /// Loop the video
+        #[arg(long)]
+        r#loop: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum LcdCommands {
     /// Set LCD brightness
     Brightness { level: u8 },
@@ -72,6 +100,28 @@ enum LcdCommands {
     Rotate { degrees: u16 },
     /// Display a JPEG image
     ShowImage { path: String },
+}
+
+/// Convert any image to 400x400 JPG using ffmpeg.
+fn convert_image_to_jpg(path: &str) -> anyhow::Result<Vec<u8>> {
+    let output = Command::new("ffmpeg")
+        .args([
+            "-i", path,
+            "-vf", "scale=400:400:force_original_aspect_ratio=decrease,pad=400:400:(ow-iw)/2:(oh-ih)/2",
+            "-frames:v", "1",
+            "-f", "mjpeg",
+            "-q:v", "5",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("ffmpeg failed to convert image");
+    }
+    Ok(output.stdout)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -181,101 +231,172 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::Display { command } => {
+            let lcd = LcdTransport::open()?;
+
+            match command {
+                DisplayCommands::Brightness { level } => {
+                    lcd.send_cmd(LcdCmd::Brightness, level)?;
+                    println!("Set display brightness to {level}");
+                }
+                DisplayCommands::Rotate { rotation } => {
+                    if rotation > 3 {
+                        anyhow::bail!("Rotation must be 0-3 (0°, 90°, 180°, 270°)");
+                    }
+                    lcd.send_cmd(LcdCmd::Rotate, rotation)?;
+                    println!("Rotated display to {}°", rotation as u16 * 90);
+                }
+                DisplayCommands::Image { path } => {
+                    let jpg_data = convert_image_to_jpg(&path)?;
+                    lcd.push_jpg(&jpg_data)?;
+                    println!("Pushed image to display ({} bytes)", jpg_data.len());
+                }
+                DisplayCommands::Video { path, fps, r#loop } => {
+                    lcd.send_cmd(LcdCmd::SetFrameRate, fps)?;
+
+                    let frame_duration = std::time::Duration::from_millis(1000 / fps as u64);
+
+                    loop {
+                        let mut child = Command::new("ffmpeg")
+                            .args([
+                                "-i", &path,
+                                "-vf", "scale=400:400:force_original_aspect_ratio=decrease,pad=400:400:(ow-iw)/2:(oh-ih)/2",
+                                "-r", &fps.to_string(),
+                                "-f", "mjpeg",
+                                "-q:v", "5",
+                                "pipe:1",
+                            ])
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::null())
+                            .spawn()?;
+
+                        let stdout = child.stdout.take().unwrap();
+                        let mut reader = std::io::BufReader::new(stdout);
+                        let mut frame_count: u64 = 0;
+
+                        // MJPEG stream: each frame starts with FF D8 and ends with FF D9
+                        loop {
+                            let frame_start = std::time::Instant::now();
+
+                            match read_jpeg_frame(&mut reader) {
+                                Ok(frame) => {
+                                    if let Err(e) = lcd.push_jpg(&frame) {
+                                        eprintln!("Error pushing frame: {e}");
+                                        break;
+                                    }
+                                    frame_count += 1;
+                                    if frame_count % 100 == 0 {
+                                        eprintln!("Streamed {frame_count} frames");
+                                    }
+
+                                    let elapsed = frame_start.elapsed();
+                                    if elapsed < frame_duration {
+                                        std::thread::sleep(frame_duration - elapsed);
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        let _ = child.wait();
+                        println!("Streamed {frame_count} frames");
+
+                        if !r#loop {
+                            break;
+                        }
+                        println!("Looping...");
+                    }
+                }
+            }
+        }
         Commands::Lcd { command } => {
             let devices = unifand::discover()?;
             let lcd_info = devices
                 .iter()
-                .find(|d| matches!(d.kind, DeviceKind::TlLcdWired | DeviceKind::TlLcdWireless | DeviceKind::Slv3h))
-                .ok_or_else(|| anyhow::anyhow!("No LCD device found"))?;
+                .find(|d| matches!(d.kind, DeviceKind::TlLcdWired))
+                .ok_or_else(|| anyhow::anyhow!("No wired LCD device found"))?;
 
             let api = hidapi::HidApi::new()?;
+            let lcd = TlLcdWired::open(&api, lcd_info)?;
 
-            match &lcd_info.kind {
-                DeviceKind::TlLcdWired => {
-                    let lcd = TlLcdWired::open(&api, lcd_info)?;
-                    match command {
-                        LcdCommands::Brightness { level } => {
-                            lcd.set_control(&LcdControlSetting {
-                                mode: LcdMode::LcdSetting,
-                                jpg_index: 0,
-                                brightness: level,
-                                video_fps: 0,
-                                rotation: ScreenRotation::Deg0,
-                                enable_test: false,
-                                test_color: (0, 0, 0),
-                            })?;
-                            println!("Set LCD brightness to {level}");
-                        }
-                        LcdCommands::Rotate { degrees } => {
-                            let rotation = match degrees {
-                                0 => ScreenRotation::Deg0,
-                                90 => ScreenRotation::Deg90,
-                                180 => ScreenRotation::Deg180,
-                                270 => ScreenRotation::Deg270,
-                                _ => anyhow::bail!("Invalid rotation: {degrees}. Use 0, 90, 180, or 270."),
-                            };
-                            lcd.set_control(&LcdControlSetting {
-                                mode: LcdMode::LcdSetting,
-                                jpg_index: 0,
-                                brightness: 100,
-                                video_fps: 0,
-                                rotation,
-                                enable_test: false,
-                                test_color: (0, 0, 0),
-                            })?;
-                            println!("Rotated LCD to {degrees} degrees");
-                        }
-                        LcdCommands::ShowImage { path } => {
-                            let jpg_data = std::fs::read(&path)?;
-                            lcd.send_jpg(&jpg_data)?;
-                            println!("Sent image {path} to LCD");
-                        }
-                    }
+            match command {
+                LcdCommands::Brightness { level } => {
+                    lcd.set_control(&LcdControlSetting {
+                        mode: LcdMode::LcdSetting,
+                        jpg_index: 0,
+                        brightness: level,
+                        video_fps: 0,
+                        rotation: ScreenRotation::Deg0,
+                        enable_test: false,
+                        test_color: (0, 0, 0),
+                    })?;
+                    println!("Set LCD brightness to {level}");
                 }
-                DeviceKind::TlLcdWireless | DeviceKind::Slv3h => {
-                    let lcd = TlLcdWireless::open(&api, lcd_info)?;
-                    match command {
-                        LcdCommands::Brightness { level } => {
-                            lcd.set_control(&LcdControlSetting {
-                                mode: LcdMode::LcdSetting,
-                                jpg_index: 0,
-                                brightness: level,
-                                video_fps: 0,
-                                rotation: ScreenRotation::Deg0,
-                                enable_test: false,
-                                test_color: (0, 0, 0),
-                            })?;
-                            println!("Set LCD brightness to {level}");
-                        }
-                        LcdCommands::Rotate { degrees } => {
-                            let rotation = match degrees {
-                                0 => ScreenRotation::Deg0,
-                                90 => ScreenRotation::Deg90,
-                                180 => ScreenRotation::Deg180,
-                                270 => ScreenRotation::Deg270,
-                                _ => anyhow::bail!("Invalid rotation: {degrees}. Use 0, 90, 180, or 270."),
-                            };
-                            lcd.set_control(&LcdControlSetting {
-                                mode: LcdMode::LcdSetting,
-                                jpg_index: 0,
-                                brightness: 100,
-                                video_fps: 0,
-                                rotation,
-                                enable_test: false,
-                                test_color: (0, 0, 0),
-                            })?;
-                            println!("Rotated LCD to {degrees} degrees");
-                        }
-                        LcdCommands::ShowImage { .. } => {
-                            eprintln!("Error: show-image is not supported on wireless LCD (requires USB bulk transfer)");
-                            std::process::exit(1);
-                        }
-                    }
+                LcdCommands::Rotate { degrees } => {
+                    let rotation = match degrees {
+                        0 => ScreenRotation::Deg0,
+                        90 => ScreenRotation::Deg90,
+                        180 => ScreenRotation::Deg180,
+                        270 => ScreenRotation::Deg270,
+                        _ => anyhow::bail!("Invalid rotation: {degrees}. Use 0, 90, 180, or 270."),
+                    };
+                    lcd.set_control(&LcdControlSetting {
+                        mode: LcdMode::LcdSetting,
+                        jpg_index: 0,
+                        brightness: 100,
+                        video_fps: 0,
+                        rotation,
+                        enable_test: false,
+                        test_color: (0, 0, 0),
+                    })?;
+                    println!("Rotated LCD to {degrees} degrees");
                 }
-                _ => unreachable!(),
+                LcdCommands::ShowImage { path } => {
+                    let jpg_data = std::fs::read(&path)?;
+                    lcd.send_jpg(&jpg_data)?;
+                    println!("Sent image {path} to LCD");
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Read a single JPEG frame from an MJPEG stream.
+/// JPEG frames start with FF D8 and end with FF D9.
+fn read_jpeg_frame<R: Read>(reader: &mut R) -> anyhow::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(32768);
+    let mut byte = [0u8; 1];
+
+    // Find start marker FF D8
+    let mut found_ff = false;
+    loop {
+        if reader.read_exact(&mut byte).is_err() {
+            anyhow::bail!("end of stream");
+        }
+        if found_ff && byte[0] == 0xD8 {
+            buf.push(0xFF);
+            buf.push(0xD8);
+            break;
+        }
+        found_ff = byte[0] == 0xFF;
+    }
+
+    // Read until end marker FF D9
+    loop {
+        if reader.read_exact(&mut byte).is_err() {
+            anyhow::bail!("end of stream");
+        }
+        buf.push(byte[0]);
+        if buf.len() >= 2 && buf[buf.len() - 2] == 0xFF && buf[buf.len() - 1] == 0xD9 {
+            break;
+        }
+        if buf.len() > 500_000 {
+            anyhow::bail!("frame too large");
+        }
+    }
+
+    Ok(buf)
 }

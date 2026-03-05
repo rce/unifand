@@ -24,6 +24,28 @@ pub fn encrypt(plaintext: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Encrypt with DES-CBC using PKCS7 padding (for wireless LCD protocol).
+/// 504-byte input → 512-byte output (adds 8-byte padding block).
+pub fn encrypt_pkcs7(plaintext: &[u8]) -> Vec<u8> {
+    use des::cipher::generic_array::GenericArray;
+
+    // PKCS7 padding: if already aligned to 8, add full block of 0x08
+    let pad_len = 8 - (plaintext.len() % 8);
+    let padded_len = plaintext.len() + pad_len;
+    let mut buf = vec![0u8; padded_len];
+    buf[..plaintext.len()].copy_from_slice(plaintext);
+    for byte in &mut buf[plaintext.len()..] {
+        *byte = pad_len as u8;
+    }
+
+    let mut encryptor = DesCbcEnc::new(DES_KEY.into(), DES_KEY.into());
+    for chunk in buf.chunks_exact_mut(8) {
+        let block = GenericArray::from_mut_slice(chunk);
+        encryptor.encrypt_block_mut(block);
+    }
+    buf
+}
+
 /// Decrypt DES-CBC data.
 pub fn decrypt(ciphertext: &[u8]) -> Vec<u8> {
     use des::cipher::generic_array::GenericArray;
