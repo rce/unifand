@@ -1,0 +1,16 @@
+[package]
+name = "unifand"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "unifanctl"
+path = "src/bin/unifanctl.rs"
+
+[dependencies]
+hidapi = "2"
+rusb = "0.9"
+des = "0.8"
+cbc = "0.1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
