@@ -347,9 +347,22 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("Warning: FPS above 30 may cause the LCD to lock up");
                     }
 
-                    // Set frame rate (wireless only — wired just streams directly)
-                    if let Lcd::Wireless(w) = &lcd {
-                        w.send_cmd(LcdCmd::SetFrameRate, fps)?;
+                    match &lcd {
+                        Lcd::Wireless(w) => {
+                            w.send_cmd(LcdCmd::SetFrameRate, fps)?;
+                        }
+                        Lcd::Wired(w) => {
+                            // Tell the LCD to display JPEG content before streaming frames
+                            w.set_control(&LcdControlSetting {
+                                mode: LcdMode::ShowJpg,
+                                jpg_index: 0,
+                                brightness: 100,
+                                video_fps: fps,
+                                rotation: ScreenRotation::Deg0,
+                                enable_test: false,
+                                test_color: (0, 0, 0),
+                            })?;
+                        }
                     }
 
                     let frame_duration = std::time::Duration::from_millis(1000 / fps as u64);
