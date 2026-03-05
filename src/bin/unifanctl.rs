@@ -31,12 +31,7 @@ enum Commands {
         #[command(subcommand)]
         command: WirelessCommands,
     },
-    /// LCD display commands (wired HID)
-    Lcd {
-        #[command(subcommand)]
-        command: LcdCommands,
-    },
-    /// Wireless LCD display commands (USB bulk)
+    /// LCD display commands (auto-detects wired or wireless LCD)
     Display {
         #[command(subcommand)]
         command: DisplayCommands,
@@ -74,12 +69,15 @@ enum WirelessCommands {
 
 #[derive(Subcommand)]
 enum DisplayCommands {
-    /// Reboot the LCD (useful to recover from stuck state)
+    /// Reboot the LCD (wireless only, useful to recover from stuck state)
     Reset,
-    /// Set LCD brightness (0-255)
+    /// Set LCD brightness
     Brightness { level: u8 },
-    /// Rotate LCD display (0-3: 0°, 90°, 180°, 270°)
-    Rotate { rotation: u8 },
+    /// Rotate LCD display
+    Rotate {
+        /// Rotation: 0-3 for wireless (0°,90°,180°,270°) or 0/90/180/270 for wired
+        rotation: u16,
+    },
     /// Push an image to the LCD (any format, converted via ffmpeg to 400x400 JPG)
     Image { path: String },
     /// Stream a video to the LCD (any format, converted via ffmpeg to 400x400 JPG frames)
@@ -94,14 +92,10 @@ enum DisplayCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum LcdCommands {
-    /// Set LCD brightness
-    Brightness { level: u8 },
-    /// Rotate LCD display
-    Rotate { degrees: u16 },
-    /// Display a JPEG image
-    ShowImage { path: String },
+/// Which LCD type we found.
+enum Lcd {
+    Wireless(LcdTransport),
+    Wired(TlLcdWired),
 }
 
 /// Convert any image to 400x400 JPG using ffmpeg.
@@ -124,6 +118,30 @@ fn convert_image_to_jpg(path: &str) -> anyhow::Result<Vec<u8>> {
         anyhow::bail!("ffmpeg failed to convert image");
     }
     Ok(output.stdout)
+}
+
+/// Try to open any available LCD (wireless first, then wired).
+fn open_lcd() -> anyhow::Result<Lcd> {
+    // Try wireless LCD first (USB bulk)
+    if let Ok(lcd) = LcdTransport::open() {
+        println!("Found wireless LCD");
+        return Ok(Lcd::Wireless(lcd));
+    }
+
+    // Try wired LCD (HID)
+    let devices = unifand::discover()?;
+    if let Some(lcd_info) = devices
+        .iter()
+        .find(|d| matches!(d.kind, DeviceKind::TlLcdWired))
+    {
+        let api = hidapi::HidApi::new()?;
+        let lcd = TlLcdWired::open(&api, lcd_info)?;
+        lcd.handshake()?;
+        println!("Found wired LCD");
+        return Ok(Lcd::Wired(lcd));
+    }
+
+    anyhow::bail!("No LCD display found (checked wireless USB and wired HID)")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -234,27 +252,88 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Display { command } => {
-            let lcd = LcdTransport::open()?;
+            let lcd = open_lcd()?;
 
             match command {
                 DisplayCommands::Reset => {
-                    lcd.send_cmd_bare(LcdCmd::Reboot)?;
-                    println!("Sent reboot command to display");
+                    match &lcd {
+                        Lcd::Wireless(w) => {
+                            w.send_cmd_bare(LcdCmd::Reboot)?;
+                            println!("Sent reboot command to display");
+                        }
+                        Lcd::Wired(_) => {
+                            anyhow::bail!("Reset not supported on wired LCD");
+                        }
+                    }
                 }
                 DisplayCommands::Brightness { level } => {
-                    lcd.send_cmd(LcdCmd::Brightness, level)?;
+                    match &lcd {
+                        Lcd::Wireless(w) => {
+                            w.send_cmd(LcdCmd::Brightness, level)?;
+                        }
+                        Lcd::Wired(w) => {
+                            w.set_control(&LcdControlSetting {
+                                mode: LcdMode::LcdSetting,
+                                jpg_index: 0,
+                                brightness: level,
+                                video_fps: 0,
+                                rotation: ScreenRotation::Deg0,
+                                enable_test: false,
+                                test_color: (0, 0, 0),
+                            })?;
+                        }
+                    }
                     println!("Set display brightness to {level}");
                 }
                 DisplayCommands::Rotate { rotation } => {
-                    if rotation > 3 {
-                        anyhow::bail!("Rotation must be 0-3 (0°, 90°, 180°, 270°)");
+                    match &lcd {
+                        Lcd::Wireless(w) => {
+                            if rotation > 3 {
+                                anyhow::bail!("Rotation must be 0-3 (0°, 90°, 180°, 270°)");
+                            }
+                            w.send_cmd(LcdCmd::Rotate, rotation as u8)?;
+                            println!("Rotated display to {}°", rotation * 90);
+                        }
+                        Lcd::Wired(w) => {
+                            let rot = match rotation {
+                                0 => ScreenRotation::Deg0,
+                                90 => ScreenRotation::Deg90,
+                                180 => ScreenRotation::Deg180,
+                                270 => ScreenRotation::Deg270,
+                                _ => anyhow::bail!("Invalid rotation: {rotation}. Use 0, 90, 180, or 270."),
+                            };
+                            w.set_control(&LcdControlSetting {
+                                mode: LcdMode::LcdSetting,
+                                jpg_index: 0,
+                                brightness: 100,
+                                video_fps: 0,
+                                rotation: rot,
+                                enable_test: false,
+                                test_color: (0, 0, 0),
+                            })?;
+                            println!("Rotated display to {rotation}°");
+                        }
                     }
-                    lcd.send_cmd(LcdCmd::Rotate, rotation)?;
-                    println!("Rotated display to {}°", rotation as u16 * 90);
                 }
                 DisplayCommands::Image { path } => {
                     let jpg_data = convert_image_to_jpg(&path)?;
-                    lcd.push_jpg(&jpg_data)?;
+                    match &lcd {
+                        Lcd::Wireless(w) => {
+                            w.push_jpg(&jpg_data)?;
+                        }
+                        Lcd::Wired(w) => {
+                            w.send_jpg(&jpg_data)?;
+                            w.set_control(&LcdControlSetting {
+                                mode: LcdMode::ShowJpg,
+                                jpg_index: 0,
+                                brightness: 100,
+                                video_fps: 0,
+                                rotation: ScreenRotation::Deg0,
+                                enable_test: false,
+                                test_color: (0, 0, 0),
+                            })?;
+                        }
+                    }
                     println!("Pushed image to display ({} bytes)", jpg_data.len());
                 }
                 DisplayCommands::Video { path, fps, r#loop } => {
@@ -264,7 +343,11 @@ fn main() -> anyhow::Result<()> {
                     if fps > 30 {
                         eprintln!("Warning: FPS above 30 may cause the LCD to lock up");
                     }
-                    lcd.send_cmd(LcdCmd::SetFrameRate, fps)?;
+
+                    // Set frame rate (wireless only — wired doesn't have this command)
+                    if let Lcd::Wireless(w) = &lcd {
+                        w.send_cmd(LcdCmd::SetFrameRate, fps)?;
+                    }
 
                     let frame_duration = std::time::Duration::from_millis(1000 / fps as u64);
 
@@ -293,7 +376,11 @@ fn main() -> anyhow::Result<()> {
 
                             match read_jpeg_frame(&mut reader) {
                                 Ok(frame) => {
-                                    if let Err(e) = lcd.push_jpg(&frame) {
+                                    let result = match &lcd {
+                                        Lcd::Wireless(w) => w.push_jpg(&frame),
+                                        Lcd::Wired(w) => w.send_sync_jpg(&frame),
+                                    };
+                                    if let Err(e) = result {
                                         eprintln!("Error pushing frame: {e}");
                                         break;
                                     }
@@ -319,68 +406,6 @@ fn main() -> anyhow::Result<()> {
                         }
                         println!("Looping...");
                     }
-                }
-            }
-        }
-        Commands::Lcd { command } => {
-            let devices = unifand::discover()?;
-            let lcd_info = devices
-                .iter()
-                .find(|d| matches!(d.kind, DeviceKind::TlLcdWired))
-                .ok_or_else(|| anyhow::anyhow!("No wired LCD device found"))?;
-
-            let api = hidapi::HidApi::new()?;
-            let lcd = TlLcdWired::open(&api, lcd_info)?;
-
-            // Always handshake first (C# does this on Open)
-            lcd.handshake()?;
-
-            match command {
-                LcdCommands::Brightness { level } => {
-                    lcd.set_control(&LcdControlSetting {
-                        mode: LcdMode::LcdSetting,
-                        jpg_index: 0,
-                        brightness: level,
-                        video_fps: 0,
-                        rotation: ScreenRotation::Deg0,
-                        enable_test: false,
-                        test_color: (0, 0, 0),
-                    })?;
-                    println!("Set LCD brightness to {level}");
-                }
-                LcdCommands::Rotate { degrees } => {
-                    let rotation = match degrees {
-                        0 => ScreenRotation::Deg0,
-                        90 => ScreenRotation::Deg90,
-                        180 => ScreenRotation::Deg180,
-                        270 => ScreenRotation::Deg270,
-                        _ => anyhow::bail!("Invalid rotation: {degrees}. Use 0, 90, 180, or 270."),
-                    };
-                    lcd.set_control(&LcdControlSetting {
-                        mode: LcdMode::LcdSetting,
-                        jpg_index: 0,
-                        brightness: 100,
-                        video_fps: 0,
-                        rotation,
-                        enable_test: false,
-                        test_color: (0, 0, 0),
-                    })?;
-                    println!("Rotated LCD to {degrees} degrees");
-                }
-                LcdCommands::ShowImage { path } => {
-                    let jpg_data = convert_image_to_jpg(&path)?;
-                    lcd.send_jpg(&jpg_data)?;
-                    // Tell the LCD to display the image we just pushed
-                    lcd.set_control(&LcdControlSetting {
-                        mode: LcdMode::ShowJpg,
-                        jpg_index: 0,
-                        brightness: 100,
-                        video_fps: 0,
-                        rotation: ScreenRotation::Deg0,
-                        enable_test: false,
-                        test_color: (0, 0, 0),
-                    })?;
-                    println!("Sent image {path} to LCD ({} bytes)", jpg_data.len());
                 }
             }
         }
