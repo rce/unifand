@@ -1,3 +1,11 @@
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8040", MODE="0660", TAG+="uaccess"
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8041", MODE="0660", TAG+="uaccess"
+# Lian Li Uni Fan - unifand
+# TL Fan Controller (wired)
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", MODE="0660", TAG+="uaccess"
+# TL LCD Wired
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="04fc", ATTRS{idProduct}=="7393", MODE="0660", TAG+="uaccess"
+# TL LCD Wireless
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="1cbe", ATTRS{idProduct}=="0006", MODE="0660", TAG+="uaccess"
+# Wireless RF TX Dongle
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8040", MODE="0660", TAG+="uaccess"
+# Wireless RF RX Dongle
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8041", MODE="0660", TAG+="uaccess"
