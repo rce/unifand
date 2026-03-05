@@ -347,7 +347,7 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("Warning: FPS above 30 may cause the LCD to lock up");
                     }
 
-                    // Set frame rate (wireless only — wired doesn't have this command)
+                    // Set frame rate (wireless only — wired just streams directly)
                     if let Lcd::Wireless(w) = &lcd {
                         w.send_cmd(LcdCmd::SetFrameRate, fps)?;
                     }
