@@ -2,16 +2,15 @@
 ///
 /// Coordinates the SLV3H HID hub, RF TX dongle, and RF RX dongle
 /// to control wireless Lian Li fans.
-
 use std::time::Duration;
 
 use hidapi::HidApi;
 
+use crate::Result;
 use crate::device::DeviceInfo;
 use crate::protocol::slv3h::{self, MasterInfo, RfDeviceInfo};
 use crate::transport::hid::HidTransport;
 use crate::transport::rf::RfTransport;
-use crate::Result;
 
 pub struct Slv3hController {
     hub: HidTransport,
@@ -44,18 +43,16 @@ impl Slv3hController {
         self.hub.raw_write(&buf)?;
 
         let resp = self.hub.raw_read(64, 100)?;
-        slv3h::parse_mac_response(&resp).ok_or_else(|| {
-            crate::Error::InvalidResponse("failed to get hub MAC".into())
-        })
+        slv3h::parse_mac_response(&resp)
+            .ok_or_else(|| crate::Error::InvalidResponse("failed to get hub MAC".into()))
     }
 
     /// Query the master MAC, firmware version, and system clock from the TX dongle.
     pub fn query_master(&mut self, channel: u8) -> Result<MasterInfo> {
         let pkt = slv3h::query_master_packet(channel);
         let resp = self.tx.write_read(&pkt)?;
-        let info = slv3h::parse_master_response(&resp).ok_or_else(|| {
-            crate::Error::InvalidResponse("failed to query master".into())
-        })?;
+        let info = slv3h::parse_master_response(&resp)
+            .ok_or_else(|| crate::Error::InvalidResponse("failed to query master".into()))?;
         self.master_info = Some(info.clone());
         Ok(info)
     }
@@ -68,11 +65,7 @@ impl Slv3hController {
 
     /// Get the list of RF devices (fans, strimers, etc.) from the RX dongle.
     pub fn get_device_list(&self) -> Result<Vec<RfDeviceInfo>> {
-        let master_mac = self
-            .master_info
-            .as_ref()
-            .map(|m| m.mac)
-            .unwrap_or([0u8; 6]);
+        let master_mac = self.master_info.as_ref().map(|m| m.mac).unwrap_or([0u8; 6]);
 
         let page_count: u8 = 1;
         let pkt = slv3h::get_device_list_packet(page_count);
@@ -85,18 +78,10 @@ impl Slv3hController {
     }
 
     /// Set fan PWM values for a specific device.
-    pub fn set_fan_pwm(
-        &self,
-        device: &RfDeviceInfo,
-        pwm: &[u8; 4],
-    ) -> Result<()> {
-        let master_mac = self
-            .master_info
-            .as_ref()
-            .map(|m| m.mac)
-            .ok_or_else(|| {
-                crate::Error::InvalidResponse("not initialized — call init() first".into())
-            })?;
+    pub fn set_fan_pwm(&self, device: &RfDeviceInfo, pwm: &[u8; 4]) -> Result<()> {
+        let master_mac = self.master_info.as_ref().map(|m| m.mac).ok_or_else(|| {
+            crate::Error::InvalidResponse("not initialized — call init() first".into())
+        })?;
 
         let channel = self
             .master_info
@@ -125,9 +110,7 @@ impl Slv3hController {
             .master_info
             .as_ref()
             .map(|m| m.mac)
-            .ok_or_else(|| {
-                crate::Error::InvalidResponse("not initialized".into())
-            })?;
+            .ok_or_else(|| crate::Error::InvalidResponse("not initialized".into()))?;
 
         let channel = slv3h::DEFAULT_CHANNEL;
         let rf = slv3h::build_rf_save_config_packet(&master_mac);

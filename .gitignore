@@ -1,0 +1,10 @@
+/target
+target/
+dlls/
+decompiled/
+extracted/
+
+*.qcow2
+*.mp4
+*.webm
+*.iso

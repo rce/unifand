@@ -39,9 +39,7 @@ impl LedPacket {
     /// - Without report ID (Linux hidapi read): [command, ...]
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
         if bytes.len() < LED_HEADER_LEN - 1 {
-            return Err(crate::Error::InvalidResponse(
-                "packet too short".into(),
-            ));
+            return Err(crate::Error::InvalidResponse("packet too short".into()));
         }
         // If first byte is the report ID, skip it
         let b = if bytes[0] == LED_REPORT_ID {
@@ -109,9 +107,7 @@ impl LcdPacket {
     /// - Without report ID (Linux hidapi read): [command, ...]
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
         if bytes.len() < LCD_HEADER_LEN - 1 {
-            return Err(crate::Error::InvalidResponse(
-                "packet too short".into(),
-            ));
+            return Err(crate::Error::InvalidResponse("packet too short".into()));
         }
         let b = if bytes[0] == LCD_REPORT_ID {
             &bytes[1..]
@@ -119,10 +115,8 @@ impl LcdPacket {
             bytes
         };
         let data_size = u32::from_be_bytes([b[1], b[2], b[3], b[4]]);
-        let packet_number =
-            (b[5] as u32) << 16 | (b[6] as u32) << 8 | b[7] as u32;
-        let payload_len = ((b[8] as usize) << 8 | b[9] as usize)
-            .min(b.len().saturating_sub(10));
+        let packet_number = (b[5] as u32) << 16 | (b[6] as u32) << 8 | b[7] as u32;
+        let payload_len = ((b[8] as usize) << 8 | b[9] as usize).min(b.len().saturating_sub(10));
         let data = b[10..10 + payload_len].to_vec();
         Ok(Self {
             command: b[0],
@@ -164,7 +158,7 @@ mod tests {
         assert_eq!(bytes[2], 0x00); // reserved
         assert_eq!(bytes[3], 0x00); // packet_number high
         assert_eq!(bytes[4], 0x00); // packet_number low
-        assert_eq!(bytes[5], 2);    // payload length
+        assert_eq!(bytes[5], 2); // payload length
         assert_eq!(bytes[6], 0x12);
         assert_eq!(bytes[7], 0x80);
         assert_eq!(bytes[8], 0x00); // rest is zero-padded
@@ -189,7 +183,7 @@ mod tests {
         // Linux hidapi read() strips report ID, so byte[0] is command
         let mut bytes = [0u8; LED_PACKET_LEN];
         bytes[0] = 0xA1; // command directly (no report ID)
-        bytes[4] = 3;    // payload length (shifted by 1 vs with-report-id)
+        bytes[4] = 3; // payload length (shifted by 1 vs with-report-id)
         bytes[5] = 0xDE;
         bytes[6] = 0xAD;
         bytes[7] = 0xBE;

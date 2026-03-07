@@ -62,7 +62,11 @@ pub struct DeviceInfo {
 
 impl fmt::Display for DeviceInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} [{:04x}:{:04x}] {}", self.kind, self.vid, self.pid, self.path)
+        write!(
+            f,
+            "{} [{:04x}:{:04x}] {}",
+            self.kind, self.vid, self.pid, self.path
+        )
     }
 }
 

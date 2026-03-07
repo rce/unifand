@@ -222,8 +222,8 @@ pub fn parse_device_list(data: &[u8], master_mac: &[u8; 6]) -> Vec<RfDeviceInfo>
 
         let mut fan_speeds = [0u16; 4];
         for i in 0..4 {
-            fan_speeds[i] = ((data[offset + 28 + i * 2] as u16) << 8)
-                | data[offset + 29 + i * 2] as u16;
+            fan_speeds[i] =
+                ((data[offset + 28 + i * 2] as u16) << 8) | data[offset + 29 + i * 2] as u16;
         }
 
         let mut fan_pwm = [0u8; 4];
@@ -314,10 +314,7 @@ pub fn build_rf_save_config_packet(master_mac: &[u8; 6]) -> [u8; RF_PACKET_LEN] 
 }
 
 /// Build an RF clock sync packet.
-pub fn build_rf_clock_sync_packet(
-    master_mac: &[u8; 6],
-    cpu_info: &[u8],
-) -> [u8; RF_PACKET_LEN] {
+pub fn build_rf_clock_sync_packet(master_mac: &[u8; 6], cpu_info: &[u8]) -> [u8; RF_PACKET_LEN] {
     let mut rf = [0u8; RF_PACKET_LEN];
     rf[0] = RF_CMD;
     rf[1] = RF_CLOCK_SYNC;
@@ -455,10 +452,14 @@ mod tests {
         // fan_num = 4
         data[offset + 19] = 4;
         // fan_speeds: 1200, 1100, 1000, 900
-        data[offset + 28] = 0x04; data[offset + 29] = 0xB0; // 1200
-        data[offset + 30] = 0x04; data[offset + 31] = 0x4C; // 1100
-        data[offset + 32] = 0x03; data[offset + 33] = 0xE8; // 1000
-        data[offset + 34] = 0x03; data[offset + 35] = 0x84; // 900
+        data[offset + 28] = 0x04;
+        data[offset + 29] = 0xB0; // 1200
+        data[offset + 30] = 0x04;
+        data[offset + 31] = 0x4C; // 1100
+        data[offset + 32] = 0x03;
+        data[offset + 33] = 0xE8; // 1000
+        data[offset + 34] = 0x03;
+        data[offset + 35] = 0x84; // 900
         // fan_pwm
         data[offset + 36] = 80;
         data[offset + 37] = 80;

@@ -2,14 +2,13 @@
 ///
 /// The LCD accepts DES-CBC encrypted 504-byte command headers,
 /// optionally followed by raw payload data (e.g. JPG image bytes).
-
 use std::time::Duration;
 
 use rusb::{Context, DeviceHandle, UsbContext};
 
+use crate::Result;
 use crate::device::known;
 use crate::transport::usb;
-use crate::Result;
 
 const ENDPOINT_OUT: u8 = 0x01;
 const ENDPOINT_IN: u8 = 0x81;
@@ -33,6 +32,7 @@ pub enum LcdCmd {
 
 pub struct LcdTransport {
     handle: DeviceHandle<Context>,
+    pub serial: Option<String>,
 }
 
 impl LcdTransport {
@@ -58,15 +58,33 @@ impl LcdTransport {
             if !ok {
                 continue;
             }
+            let desc = match device.device_descriptor() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
             let handle = match device.open() {
                 Ok(h) => h,
                 Err(_) => continue,
             };
+
+            // Read USB serial number before claiming interface
+            let serial = handle
+                .read_languages(Duration::from_millis(200))
+                .ok()
+                .and_then(|langs| langs.into_iter().next())
+                .and_then(|lang| {
+                    handle
+                        .read_serial_number_string(lang, &desc, Duration::from_millis(200))
+                        .ok()
+                })
+                .filter(|s| !s.is_empty());
+            eprintln!("LCD serial: {:?}", serial);
+
             if handle.kernel_driver_active(INTERFACE).unwrap_or(false) {
                 let _ = handle.detach_kernel_driver(INTERFACE);
             }
             if handle.claim_interface(INTERFACE).is_ok() {
-                lcds.push(Self { handle });
+                lcds.push(Self { handle, serial });
             }
         }
         Ok(lcds)
@@ -105,8 +123,7 @@ impl LcdTransport {
         // Fixed-size transfer: encrypted header + jpg data + zero padding to 102400 bytes
         let mut transfer = vec![0u8; IMG_TRANSFER_LEN];
         transfer[..encrypted.len()].copy_from_slice(&encrypted);
-        transfer[encrypted.len()..encrypted.len() + jpg_data.len()]
-            .copy_from_slice(jpg_data);
+        transfer[encrypted.len()..encrypted.len() + jpg_data.len()].copy_from_slice(jpg_data);
 
         self.write_bulk(&transfer)?;
 
@@ -118,7 +135,9 @@ impl LcdTransport {
     /// Read and discard any pending response from the device.
     fn drain_response(&self) {
         let mut buf = [0u8; 512];
-        let _ = self.handle.read_bulk(ENDPOINT_IN, &mut buf, Duration::from_millis(50));
+        let _ = self
+            .handle
+            .read_bulk(ENDPOINT_IN, &mut buf, Duration::from_millis(50));
     }
 
     /// Read a response from the LCD (512 bytes max).

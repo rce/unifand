@@ -1,0 +1,14 @@
+[Unit]
+Description=Lian Li Uni Fan Daemon
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/unifand
+ExecStart=/usr/bin/cargo run --release --bin unifand
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

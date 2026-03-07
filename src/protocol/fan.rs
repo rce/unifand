@@ -88,10 +88,8 @@ mod tests {
     fn parse_handshake_multiple_fans() {
         let data = [
             // Fan 1: port 0, fan 0, detected, not upgrading, 800 RPM
-            0x80, 0x03, 0x20,
-            // Fan 2: port 2, fan 1, detected, upgrading, 0 RPM
-            0xE1, 0x00, 0x00,
-            // Fan 3: port 1, fan 3, not detected, not upgrading, 0 RPM
+            0x80, 0x03, 0x20, // Fan 2: port 2, fan 1, detected, upgrading, 0 RPM
+            0xE1, 0x00, 0x00, // Fan 3: port 1, fan 3, not detected, not upgrading, 0 RPM
             0x13, 0x00, 0x00,
         ];
         let fans = parse_handshake(&data);

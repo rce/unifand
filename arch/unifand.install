@@ -1,0 +1,10 @@
+post_install() {
+  echo ":: Reload udev rules to enable device access without root:"
+  echo "     sudo udevadm control --reload"
+  echo "     sudo udevadm trigger"
+  echo ":: You may need to re-plug your USB devices for the rules to take effect."
+}
+
+post_upgrade() {
+  post_install
+}

@@ -1,9 +1,9 @@
 use hidapi::HidApi;
 
-use crate::device::{known, DeviceInfo};
+use crate::Result;
+use crate::device::{DeviceInfo, known};
 use crate::protocol::{fan, packet::LedPacket};
 use crate::transport::hid::HidTransport;
-use crate::Result;
 
 pub struct TlFanController {
     transport: HidTransport,

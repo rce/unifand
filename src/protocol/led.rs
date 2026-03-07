@@ -83,7 +83,7 @@ mod tests {
             fan_index: 0,
             sync: false,
             mode: 1,       // static
-            brightness: 4,  // full
+            brightness: 4, // full
             speed: 0,
             colors: vec![Rgb { r: 255, g: 0, b: 0 }],
             direction: LightingDirection::RightOrClockwise,
@@ -94,17 +94,17 @@ mod tests {
         assert_eq!(bytes[1], commands::SET_FAN_LIGHT);
         assert_eq!(bytes[5], 20); // payload length
         // payload starts at byte 6
-        assert_eq!(bytes[6], 0x00);  // (0<<4)|0 sync=false
-        assert_eq!(bytes[7], 0x00);  // (0<<4)|0 fan_index
-        assert_eq!(bytes[8], 1);     // mode
-        assert_eq!(bytes[9], 4);     // brightness
-        assert_eq!(bytes[10], 0);    // speed
-        assert_eq!(bytes[11], 255);  // R
-        assert_eq!(bytes[12], 0);    // G
-        assert_eq!(bytes[13], 0);    // B
-        assert_eq!(bytes[23], 0);    // direction
-        assert_eq!(bytes[24], 0);    // disabled
-        assert_eq!(bytes[25], 1);    // color count
+        assert_eq!(bytes[6], 0x00); // (0<<4)|0 sync=false
+        assert_eq!(bytes[7], 0x00); // (0<<4)|0 fan_index
+        assert_eq!(bytes[8], 1); // mode
+        assert_eq!(bytes[9], 4); // brightness
+        assert_eq!(bytes[10], 0); // speed
+        assert_eq!(bytes[11], 255); // R
+        assert_eq!(bytes[12], 0); // G
+        assert_eq!(bytes[13], 0); // B
+        assert_eq!(bytes[23], 0); // direction
+        assert_eq!(bytes[24], 0); // disabled
+        assert_eq!(bytes[25], 1); // color count
     }
 
     #[test]

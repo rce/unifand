@@ -145,14 +145,14 @@ mod tests {
         };
         let bytes = setting.to_bytes();
         assert_eq!(bytes.len(), 11);
-        assert_eq!(bytes[0], 1);  // ShowJpg
-        assert_eq!(bytes[1], 0);  // jpg_index high
-        assert_eq!(bytes[2], 5);  // jpg_index low
-        assert_eq!(bytes[3], 0);  // reserved
+        assert_eq!(bytes[0], 1); // ShowJpg
+        assert_eq!(bytes[1], 0); // jpg_index high
+        assert_eq!(bytes[2], 5); // jpg_index low
+        assert_eq!(bytes[3], 0); // reserved
         assert_eq!(bytes[4], 80); // brightness
         assert_eq!(bytes[5], 30); // fps
-        assert_eq!(bytes[6], 2);  // Deg180
-        assert_eq!(bytes[7], 0);  // enable_test = false
+        assert_eq!(bytes[6], 2); // Deg180
+        assert_eq!(bytes[7], 0); // enable_test = false
         assert_eq!(bytes[8], 0);
         assert_eq!(bytes[9], 0);
         assert_eq!(bytes[10], 0);

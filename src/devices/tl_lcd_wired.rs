@@ -1,9 +1,9 @@
 use hidapi::HidApi;
 
+use crate::Result;
 use crate::device::DeviceInfo;
 use crate::protocol::lcd;
 use crate::transport::hid::HidTransport;
-use crate::Result;
 
 pub struct TlLcdWired {
     transport: HidTransport,
@@ -24,7 +24,9 @@ impl TlLcdWired {
         // directly from offset 11 (after report ID + 10-byte header).
         let data_offset = if resp[0] == 0x02 { 11 } else { 10 };
         if resp.len() <= data_offset {
-            return Err(crate::Error::InvalidResponse("handshake response too short".into()));
+            return Err(crate::Error::InvalidResponse(
+                "handshake response too short".into(),
+            ));
         }
         lcd::parse_handshake(&resp[data_offset..])
     }

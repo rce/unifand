@@ -2,13 +2,12 @@
 ///
 /// TX dongle (0416:8040): sends RF commands, queries master MAC
 /// RX dongle (0416:8041): receives device list/status
-
 use std::time::Duration;
 
 use rusb::{Context, DeviceHandle, UsbContext};
 
-use crate::device::known;
 use crate::Result;
+use crate::device::known;
 
 const ENDPOINT_OUT: u8 = 0x01;
 const ENDPOINT_IN: u8 = 0x81;
@@ -61,8 +60,7 @@ impl RfTransport {
 
     /// Write a 64-byte packet to the dongle.
     pub fn write(&self, data: &[u8; 64]) -> Result<()> {
-        self.handle
-            .write_bulk(ENDPOINT_OUT, data, TIMEOUT)?;
+        self.handle.write_bulk(ENDPOINT_OUT, data, TIMEOUT)?;
         Ok(())
     }
 
@@ -75,9 +73,7 @@ impl RfTransport {
     /// Read up to `len` bytes from the dongle.
     pub fn read(&self, len: usize, timeout: Duration) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len];
-        let n = self
-            .handle
-            .read_bulk(ENDPOINT_IN, &mut buf, timeout)?;
+        let n = self.handle.read_bulk(ENDPOINT_IN, &mut buf, timeout)?;
         buf.truncate(n);
         Ok(buf)
     }
@@ -88,10 +84,7 @@ impl RfTransport {
 
         while result.len() < len {
             let mut buf = [0u8; 64];
-            match self
-                .handle
-                .read_bulk(ENDPOINT_IN, &mut buf, timeout)
-            {
+            match self.handle.read_bulk(ENDPOINT_IN, &mut buf, timeout) {
                 Ok(n) => {
                     result.extend_from_slice(&buf[..n]);
                     if n < 64 {

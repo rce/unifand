@@ -1,9 +1,9 @@
 use hidapi::HidApi;
 
+use crate::Result;
 use crate::device::DeviceInfo;
 use crate::protocol::{lcd, packet::LcdPacket};
 use crate::transport::hid::HidTransport;
-use crate::Result;
 
 /// Wireless TL LCD (1CBE:0006).
 /// HID reports work for control commands (handshake, lcd control).
