@@ -94,7 +94,7 @@ enum DisplayCommands {
 
 /// Which LCD type we found.
 enum Lcd {
-    Wireless(LcdTransport),
+    Wireless(Vec<LcdTransport>),
     Wired(TlLcdWired),
 }
 
@@ -122,10 +122,12 @@ fn convert_image_to_jpg(path: &str) -> anyhow::Result<Vec<u8>> {
 
 /// Try to open any available LCD (wireless first, then wired).
 fn open_lcd() -> anyhow::Result<Lcd> {
-    // Try wireless LCD first (USB bulk)
-    if let Ok(lcd) = LcdTransport::open() {
-        println!("Found wireless LCD");
-        return Ok(Lcd::Wireless(lcd));
+    // Try wireless LCDs first (USB bulk) — each fan LCD is a separate USB device
+    if let Ok(lcds) = LcdTransport::open_all() {
+        if !lcds.is_empty() {
+            println!("Found {} wireless LCD(s)", lcds.len());
+            return Ok(Lcd::Wireless(lcds));
+        }
     }
 
     // Try wired LCD (HID)
@@ -260,9 +262,11 @@ fn main() -> anyhow::Result<()> {
             match command {
                 DisplayCommands::Reset => {
                     match &lcd {
-                        Lcd::Wireless(w) => {
-                            w.send_cmd_bare(LcdCmd::Reboot)?;
-                            println!("Sent reboot command to display");
+                        Lcd::Wireless(screens) => {
+                            for w in screens {
+                                w.send_cmd_bare(LcdCmd::Reboot)?;
+                            }
+                            println!("Sent reboot command to {} display(s)", screens.len());
                         }
                         Lcd::Wired(_) => {
                             anyhow::bail!("Reset not supported on wired LCD");
@@ -271,8 +275,10 @@ fn main() -> anyhow::Result<()> {
                 }
                 DisplayCommands::Brightness { level } => {
                     match &lcd {
-                        Lcd::Wireless(w) => {
-                            w.send_cmd(LcdCmd::Brightness, level)?;
+                        Lcd::Wireless(screens) => {
+                            for w in screens {
+                                w.send_cmd(LcdCmd::Brightness, level)?;
+                            }
                         }
                         Lcd::Wired(w) => {
                             w.set_control(&LcdControlSetting {
@@ -290,12 +296,14 @@ fn main() -> anyhow::Result<()> {
                 }
                 DisplayCommands::Rotate { rotation } => {
                     match &lcd {
-                        Lcd::Wireless(w) => {
+                        Lcd::Wireless(screens) => {
                             if rotation > 3 {
                                 anyhow::bail!("Rotation must be 0-3 (0°, 90°, 180°, 270°)");
                             }
-                            w.send_cmd(LcdCmd::Rotate, rotation as u8)?;
-                            println!("Rotated display to {}°", rotation * 90);
+                            for w in screens {
+                                w.send_cmd(LcdCmd::Rotate, rotation as u8)?;
+                            }
+                            println!("Rotated {} display(s) to {}°", screens.len(), rotation * 90);
                         }
                         Lcd::Wired(w) => {
                             let rot = match rotation {
@@ -321,8 +329,10 @@ fn main() -> anyhow::Result<()> {
                 DisplayCommands::Image { path } => {
                     let jpg_data = convert_image_to_jpg(&path)?;
                     match &lcd {
-                        Lcd::Wireless(w) => {
-                            w.push_jpg(&jpg_data)?;
+                        Lcd::Wireless(screens) => {
+                            for w in screens {
+                                w.push_jpg(&jpg_data)?;
+                            }
                         }
                         Lcd::Wired(w) => {
                             w.send_jpg(&jpg_data)?;
@@ -348,11 +358,12 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     match &lcd {
-                        Lcd::Wireless(w) => {
-                            w.send_cmd(LcdCmd::SetFrameRate, fps)?;
+                        Lcd::Wireless(screens) => {
+                            for w in screens {
+                                w.send_cmd(LcdCmd::SetFrameRate, fps)?;
+                            }
                         }
                         Lcd::Wired(w) => {
-                            // Tell the LCD to display JPEG content before streaming frames
                             w.set_control(&LcdControlSetting {
                                 mode: LcdMode::ShowJpg,
                                 jpg_index: 0,
@@ -393,11 +404,18 @@ fn main() -> anyhow::Result<()> {
                             match read_jpeg_frame(&mut reader) {
                                 Ok(frame) => {
                                     let result = match &lcd {
-                                        Lcd::Wireless(w) => w.push_jpg(&frame),
+                                        Lcd::Wireless(screens) => {
+                                            // Push same frame to all screens
+                                            let mut r = Ok(());
+                                            for w in screens {
+                                                if let Err(e) = w.push_jpg(&frame) {
+                                                    r = Err(e);
+                                                }
+                                            }
+                                            r
+                                        }
                                         Lcd::Wired(w) => {
                                             if frame_count == 0 {
-                                                // First frame via SendJPG (with ACK) to
-                                                // prime the device's JPEG pipeline
                                                 w.send_jpg(&frame)
                                             } else {
                                                 w.send_sync_jpg(&frame)

@@ -37,27 +37,39 @@ pub struct LcdTransport {
 
 impl LcdTransport {
     pub fn open() -> Result<Self> {
+        let all = Self::open_all()?;
+        all.into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::DeviceNotFound("wireless LCD 1CBE:0006".into()))
+    }
+
+    /// Open all wireless LCD devices (each fan LCD is a separate USB device).
+    pub fn open_all() -> Result<Vec<Self>> {
         let ctx = Context::new()?;
-        let device = ctx
-            .devices()?
-            .iter()
-            .find(|d| {
-                d.device_descriptor()
-                    .map(|desc| {
-                        desc.vendor_id() == known::TL_LCD_WIRELESS_USB_VID
-                            && desc.product_id() == known::TL_LCD_WIRELESS_USB_PID
-                    })
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| crate::Error::DeviceNotFound("wireless LCD 1CBE:0006".into()))?;
-
-        let handle = device.open()?;
-        if handle.kernel_driver_active(INTERFACE).unwrap_or(false) {
-            handle.detach_kernel_driver(INTERFACE)?;
+        let mut lcds = Vec::new();
+        for device in ctx.devices()?.iter() {
+            let ok = device
+                .device_descriptor()
+                .map(|desc| {
+                    desc.vendor_id() == known::TL_LCD_WIRELESS_USB_VID
+                        && desc.product_id() == known::TL_LCD_WIRELESS_USB_PID
+                })
+                .unwrap_or(false);
+            if !ok {
+                continue;
+            }
+            let handle = match device.open() {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            if handle.kernel_driver_active(INTERFACE).unwrap_or(false) {
+                let _ = handle.detach_kernel_driver(INTERFACE);
+            }
+            if handle.claim_interface(INTERFACE).is_ok() {
+                lcds.push(Self { handle });
+            }
         }
-        handle.claim_interface(INTERFACE)?;
-
-        Ok(Self { handle })
+        Ok(lcds)
     }
 
     /// Send a simple command with one byte parameter.
