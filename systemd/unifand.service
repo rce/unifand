@@ -4,8 +4,8 @@ After=local-fs.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dev/unifand
-ExecStart=/usr/bin/cargo run --release --bin unifand
+#WorkingDirectory=%h/dev/unifand
+ExecStart=%h/.cargo/bin/unifand
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
