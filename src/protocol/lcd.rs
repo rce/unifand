@@ -81,6 +81,11 @@ pub fn handshake_packet() -> Vec<LcdPacket> {
     vec![LcdPacket::new(commands::GET_HANDSHAKE_INFO, 0, 0, vec![])]
 }
 
+/// Build a serial number read request (command 0x3E, empty data).
+pub fn read_serial_number_packet() -> Vec<LcdPacket> {
+    vec![LcdPacket::new(commands::READ_SERIAL_NUMBER, 0, 0, vec![])]
+}
+
 /// Build packets for JPEG image data.
 pub fn write_jpg_packets(jpg_data: &[u8]) -> Vec<LcdPacket> {
     LcdPacket::build_packets(commands::WRITE_JPG, jpg_data)

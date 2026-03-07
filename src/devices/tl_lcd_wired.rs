@@ -31,6 +31,19 @@ impl TlLcdWired {
         lcd::parse_handshake(&resp[data_offset..])
     }
 
+    pub fn read_serial_number(&self) -> Result<lcd::SerialNumberInfo> {
+        let packets = lcd::read_serial_number_packet();
+        self.transport.lcd_write(&packets[0].to_bytes())?;
+        let resp = self.transport.raw_read(64, 1000)?;
+        let data_offset = if resp[0] == 0x02 { 11 } else { 10 };
+        if resp.len() <= data_offset {
+            return Err(crate::Error::InvalidResponse(
+                "serial number response too short".into(),
+            ));
+        }
+        lcd::parse_serial_number(&resp[data_offset..])
+    }
+
     pub fn set_control(&self, setting: &lcd::LcdControlSetting) -> Result<()> {
         let packets = lcd::lcd_control_packet(setting);
         for pkt in &packets {

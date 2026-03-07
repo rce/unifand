@@ -63,14 +63,23 @@ impl Response {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub uptime_secs: u64,
-    pub wireless_lcds: usize,
-    #[serde(default)]
-    pub lcd_serials: Vec<Option<String>>,
-    pub wired_lcd: bool,
+    pub wireless_lcds: Vec<WirelessLcdState>,
+    pub wired_lcds: Vec<WiredLcdState>,
     pub display: DisplayState,
     pub wireless_fans: Vec<WirelessFanState>,
     #[serde(default)]
     pub config_fans: Vec<FanConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WirelessLcdState {
+    pub serial: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WiredLcdState {
+    pub port: u8,
+    pub lcd_index: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,8 +139,23 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanConfig {
+    /// Wireless LCD serial (for wireless matching).
+    #[serde(default)]
     pub serial: String,
-    pub video: Option<String>,
+    /// USB port number (for wired LCD matching).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u8>,
+    /// LCD index within the port (for wired LCD matching).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lcd_index: Option<u8>,
+    /// Video playback config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoConfig {
+    pub path: String,
     #[serde(default = "default_fps")]
     pub fps: u8,
 }

@@ -182,97 +182,65 @@ fn daemon_available() -> bool {
 }
 
 fn print_status(status: &DaemonStatus) {
-    println!("unifand.service - Lian Li Uni Fan Daemon");
+    // Summary line
+    let wireless_fan_count: usize = status.wireless_fans.iter().map(|r| r.fans.len()).sum();
+    println!(
+        "Wireless Receivers: {}, Fans: {}",
+        status.wireless_fans.len(),
+        wireless_fan_count
+    );
+    println!("Wired Fans: {}", status.wired_lcds.len());
 
-    let secs = status.uptime_secs;
-    let uptime = if secs >= 3600 {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
-    } else if secs >= 60 {
-        format!("{}m {}s", secs / 60, secs % 60)
-    } else {
-        format!("{secs}s")
-    };
-    println!("  Active: running (uptime: {uptime})");
-
-    let lcd_desc = if status.wireless_lcds > 0 {
-        format!("{} wireless", status.wireless_lcds)
-    } else if status.wired_lcd {
-        "1 wired".into()
-    } else {
-        "none".into()
-    };
-    println!("  LCDs: {lcd_desc}");
-    if !status.lcd_serials.is_empty() {
-        for (i, serial) in status.lcd_serials.iter().enumerate() {
-            let s = serial.as_deref().unwrap_or("(none)");
-            println!("    LCD {i}: serial={s}");
-        }
-    }
-
-    let display = &status.display;
-    let display_desc = match display.mode.as_str() {
-        "idle" => "idle".into(),
-        "image" => {
-            format!("image {}", display.source.as_deref().unwrap_or("?"))
-        }
-        "video" => {
-            let src = display.source.as_deref().unwrap_or("?");
-            let fps = display
-                .fps
-                .map(|f| format!(" @ {f}fps"))
-                .unwrap_or_default();
-            let looping = if display.looping { " (looping)" } else { "" };
-            format!("video {src}{fps}{looping}")
-        }
-        other => other.into(),
-    };
-    println!("  Display: {display_desc}");
-
-    if !status.wireless_fans.is_empty() {
+    // Wireless receivers + fans
+    for (i, device) in status.wireless_fans.iter().enumerate() {
         println!();
-        println!("  Wireless Devices:");
-        for device in &status.wireless_fans {
-            println!("    Receiver {}", device.mac);
-            for (i, f) in device.fans.iter().enumerate() {
-                println!("      Fan {i}: RPM={}, PWM={}", f.rpm, f.pwm);
+        println!("Wireless Receiver #{i}");
+        println!("  mac: {}", device.mac);
+
+        for (j, f) in device.fans.iter().enumerate() {
+            println!();
+            println!("  Fan #{j}");
+
+            // Find config for this fan's LCD — match by index into wireless_lcds
+            // (wireless fans and LCDs pair by position)
+            let lcd = status.wireless_lcds.get(i * device.fans.len() + j);
+            if let Some(lcd) = lcd {
+                if let Some(serial) = &lcd.serial {
+                    println!("    serial: {serial}");
+                }
+            }
+
+            println!("    rpm: {}", f.rpm);
+            println!("    pwm: {}", f.pwm);
+
+            if let Some(lcd) = lcd {
+                if let Some(serial) = &lcd.serial {
+                    let config = status.config_fans.iter().find(|c| c.serial == *serial);
+                    if let Some(c) = config {
+                        if let Some(v) = &c.video {
+                            println!("    video: {} @ {}fps", v.path, v.fps);
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Show config entries matched to LCD serials
-    if !status.config_fans.is_empty() {
+    // Wired fans
+    for (i, lcd) in status.wired_lcds.iter().enumerate() {
         println!();
-        println!("  Fan Config:");
-        for c in &status.config_fans {
-            let matched = status
-                .lcd_serials
-                .iter()
-                .any(|s| s.as_deref() == Some(&c.serial));
-            let video_desc = match &c.video {
-                Some(v) => format!("video {}@{}fps", v, c.fps),
-                None => "no video".into(),
-            };
-            if matched {
-                println!("    LCD {}: {}", c.serial, video_desc);
-            } else {
-                println!("    Config {:?}: fan not found (disconnected?)", c.serial);
-            }
-        }
-    }
+        println!("Wired Fan #{i}");
+        println!("  port: {}", lcd.port);
+        println!("  index: {}", lcd.lcd_index);
 
-    // Warn about connected LCDs with no config entry
-    let unconfigured: Vec<_> = status
-        .lcd_serials
-        .iter()
-        .filter_map(|s| s.as_deref())
-        .filter(|s| !status.config_fans.iter().any(|c| c.serial == *s))
-        .collect();
-    if !unconfigured.is_empty() {
-        let config_path = ipc::config_path();
-        println!();
-        println!("  Unconfigured LCDs:");
-        for s in unconfigured {
-            println!("    LCD {s}: no config (add to {})", config_path.display());
+        let config = status
+            .config_fans
+            .iter()
+            .find(|c| c.port == Some(lcd.port) && c.lcd_index == Some(lcd.lcd_index));
+        if let Some(c) = config {
+            if let Some(v) = &c.video {
+                println!("  video: {} @ {}fps", v.path, v.fps);
+            }
         }
     }
 }

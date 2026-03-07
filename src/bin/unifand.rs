@@ -15,10 +15,17 @@ use unifand::protocol::lcd::{LcdControlSetting, LcdMode, ScreenRotation};
 use unifand::protocol::slv3h;
 use unifand::transport::lcd::{LcdCmd, LcdTransport};
 
+/// A wired LCD with its chain position.
+struct WiredLcd {
+    lcd: TlLcdWired,
+    port: u8,
+    lcd_index: u8,
+}
+
 /// Which LCD type the daemon owns.
 enum Lcd {
     Wireless(Vec<LcdTransport>),
-    Wired(TlLcdWired),
+    Wired(Vec<WiredLcd>),
     None,
 }
 
@@ -54,14 +61,21 @@ fn open_lcd() -> Lcd {
         }
     }
 
-    // Try wired LCD
+    // Try wired LCDs (there may be multiple daisy-chained)
     if let Ok(devices) = unifand::discover() {
-        if let Some(lcd_info) = devices
+        let lcd_infos: Vec<_> = devices
             .iter()
-            .find(|d| matches!(d.kind, DeviceKind::TlLcdWired))
-        {
+            .filter(|d| matches!(d.kind, DeviceKind::TlLcdWired))
+            .collect();
+
+        if !lcd_infos.is_empty() {
             if let Ok(api) = hidapi::HidApi::new() {
-                if let Ok(lcd) = TlLcdWired::open(&api, lcd_info) {
+                let mut wired_lcds = Vec::new();
+                for lcd_info in &lcd_infos {
+                    let Ok(lcd) = TlLcdWired::open(&api, lcd_info) else {
+                        eprintln!("Failed to open wired LCD at {:?}", lcd_info.path);
+                        continue;
+                    };
                     match lcd.handshake() {
                         Ok(info) => {
                             eprintln!(
@@ -69,10 +83,33 @@ fn open_lcd() -> Lcd {
                                 info.mode, info.frame_index
                             );
                         }
-                        Err(e) => eprintln!("Wired LCD handshake failed: {e}"),
+                        Err(e) => {
+                            eprintln!("Wired LCD handshake failed: {e}");
+                            continue;
+                        }
                     }
-                    eprintln!("Found wired LCD");
-                    return Lcd::Wired(lcd);
+                    let (port, lcd_index) = match lcd.read_serial_number() {
+                        Ok(sn) => {
+                            eprintln!(
+                                "Wired LCD: serial={:?} port={} index={}",
+                                sn.serial, sn.port, sn.lcd_index
+                            );
+                            (sn.port, sn.lcd_index)
+                        }
+                        Err(e) => {
+                            eprintln!("Wired LCD read_serial_number failed: {e}, using defaults");
+                            (0, wired_lcds.len() as u8)
+                        }
+                    };
+                    wired_lcds.push(WiredLcd {
+                        lcd,
+                        port,
+                        lcd_index,
+                    });
+                }
+                if !wired_lcds.is_empty() {
+                    eprintln!("Found {} wired LCD(s)", wired_lcds.len());
+                    return Lcd::Wired(wired_lcds);
                 }
             }
         }
@@ -127,14 +164,24 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
             Response::with_status(DaemonStatus {
                 uptime_secs: st.start_time.elapsed().as_secs(),
                 wireless_lcds: match &st.lcd {
-                    Lcd::Wireless(v) => v.len(),
-                    _ => 0,
-                },
-                lcd_serials: match &st.lcd {
-                    Lcd::Wireless(v) => v.iter().map(|l| l.serial.clone()).collect(),
+                    Lcd::Wireless(v) => v
+                        .iter()
+                        .map(|l| ipc::WirelessLcdState {
+                            serial: l.serial.clone(),
+                        })
+                        .collect(),
                     _ => vec![],
                 },
-                wired_lcd: matches!(&st.lcd, Lcd::Wired(_)),
+                wired_lcds: match &st.lcd {
+                    Lcd::Wired(v) => v
+                        .iter()
+                        .map(|w| ipc::WiredLcdState {
+                            port: w.port,
+                            lcd_index: w.lcd_index,
+                        })
+                        .collect(),
+                    _ => vec![],
+                },
                 display: st.display.clone(),
                 wireless_fans,
                 config_fans: st.config_fans.clone(),
@@ -159,11 +206,12 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                     }
                     r
                 }
-                Lcd::Wired(w) => {
-                    if let Err(e) = w.send_jpg(&jpg_data) {
-                        Err(e)
-                    } else {
-                        w.set_control(&LcdControlSetting {
+                Lcd::Wired(wired) => {
+                    let mut r = Ok(());
+                    for w in wired {
+                        if let Err(e) = w.lcd.send_jpg(&jpg_data) {
+                            r = Err(e);
+                        } else if let Err(e) = w.lcd.set_control(&LcdControlSetting {
                             mode: LcdMode::ShowJpg,
                             jpg_index: 0,
                             brightness: 100,
@@ -171,8 +219,11 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                             rotation: ScreenRotation::Deg0,
                             enable_test: false,
                             test_color: (0, 0, 0),
-                        })
+                        }) {
+                            r = Err(e);
+                        }
                     }
+                    r
                 }
                 Lcd::None => return Response::err("no LCD connected"),
             };
@@ -213,15 +264,23 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                     }
                     r
                 }
-                Lcd::Wired(w) => w.set_control(&LcdControlSetting {
-                    mode: LcdMode::ShowJpg,
-                    jpg_index: 0,
-                    brightness: 100,
-                    video_fps: fps,
-                    rotation: ScreenRotation::Deg0,
-                    enable_test: false,
-                    test_color: (0, 0, 0),
-                }),
+                Lcd::Wired(wired) => {
+                    let mut r = Ok(());
+                    for w in wired {
+                        if let Err(e) = w.lcd.set_control(&LcdControlSetting {
+                            mode: LcdMode::ShowJpg,
+                            jpg_index: 0,
+                            brightness: 100,
+                            video_fps: fps,
+                            rotation: ScreenRotation::Deg0,
+                            enable_test: false,
+                            test_color: (0, 0, 0),
+                        }) {
+                            r = Err(e);
+                        }
+                    }
+                    r
+                }
                 Lcd::None => return Response::err("no LCD connected"),
             };
 
@@ -258,15 +317,23 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                     }
                     r
                 }
-                Lcd::Wired(w) => w.set_control(&LcdControlSetting {
-                    mode: LcdMode::LcdSetting,
-                    jpg_index: 0,
-                    brightness: level,
-                    video_fps: 0,
-                    rotation: ScreenRotation::Deg0,
-                    enable_test: false,
-                    test_color: (0, 0, 0),
-                }),
+                Lcd::Wired(wired) => {
+                    let mut r = Ok(());
+                    for w in wired {
+                        if let Err(e) = w.lcd.set_control(&LcdControlSetting {
+                            mode: LcdMode::LcdSetting,
+                            jpg_index: 0,
+                            brightness: level,
+                            video_fps: 0,
+                            rotation: ScreenRotation::Deg0,
+                            enable_test: false,
+                            test_color: (0, 0, 0),
+                        }) {
+                            r = Err(e);
+                        }
+                    }
+                    r
+                }
                 Lcd::None => return Response::err("no LCD connected"),
             };
             match result {
@@ -289,7 +356,7 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                     }
                     r
                 }
-                Lcd::Wired(w) => {
+                Lcd::Wired(wired) => {
                     let rot = match rotation {
                         0 => ScreenRotation::Deg0,
                         90 => ScreenRotation::Deg90,
@@ -297,15 +364,21 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                         270 => ScreenRotation::Deg270,
                         _ => return Response::err("invalid rotation: use 0, 90, 180, or 270"),
                     };
-                    w.set_control(&LcdControlSetting {
-                        mode: LcdMode::LcdSetting,
-                        jpg_index: 0,
-                        brightness: 100,
-                        video_fps: 0,
-                        rotation: rot,
-                        enable_test: false,
-                        test_color: (0, 0, 0),
-                    })
+                    let mut r = Ok(());
+                    for w in wired {
+                        if let Err(e) = w.lcd.set_control(&LcdControlSetting {
+                            mode: LcdMode::LcdSetting,
+                            jpg_index: 0,
+                            brightness: 100,
+                            video_fps: 0,
+                            rotation: rot,
+                            enable_test: false,
+                            test_color: (0, 0, 0),
+                        }) {
+                            r = Err(e);
+                        }
+                    }
+                    r
                 }
                 Lcd::None => return Response::err("no LCD connected"),
             };
@@ -327,7 +400,7 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                     }
                     r
                 }
-                Lcd::Wired(_) => return Response::err("reset not supported on wired LCD"),
+                Lcd::Wired(_) => return Response::err("reset not supported on wired LCDs"),
                 Lcd::None => return Response::err("no LCD connected"),
             };
             match result {
@@ -435,12 +508,19 @@ fn video_loop(
                             }
                             r
                         }
-                        Lcd::Wired(w) => {
-                            if frame_count == 0 {
-                                w.send_jpg(&frame)
-                            } else {
-                                w.send_sync_jpg(&frame)
+                        Lcd::Wired(wired) => {
+                            let mut r = Ok(());
+                            for w in wired {
+                                let res = if frame_count == 0 {
+                                    w.lcd.send_jpg(&frame)
+                                } else {
+                                    w.lcd.send_sync_jpg(&frame)
+                                };
+                                if let Err(e) = res {
+                                    r = Err(e);
+                                }
                             }
+                            r
                         }
                         Lcd::None => break,
                     };
@@ -652,7 +732,18 @@ fn watch_config(state: Arc<Mutex<DaemonState>>, config_path: std::path::PathBuf)
 }
 
 fn apply_config(state: &Arc<Mutex<DaemonState>>, config: &Config) {
-    // Collect connected LCD serials for matching
+    let st = state.lock().unwrap();
+    let is_wired = matches!(&st.lcd, Lcd::Wired(_));
+    drop(st);
+
+    if is_wired {
+        apply_config_wired(state, config);
+    } else {
+        apply_config_wireless(state, config);
+    }
+}
+
+fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
     let lcd_serials: Vec<String> = {
         let st = state.lock().unwrap();
         match &st.lcd {
@@ -661,7 +752,6 @@ fn apply_config(state: &Arc<Mutex<DaemonState>>, config: &Config) {
         }
     };
 
-    // Warn about config entries that don't match any connected LCD
     for fan in &config.fans {
         if !fan.serial.is_empty() && !lcd_serials.iter().any(|s| s == &fan.serial) {
             eprintln!(
@@ -671,7 +761,6 @@ fn apply_config(state: &Arc<Mutex<DaemonState>>, config: &Config) {
         }
     }
 
-    // Warn about connected LCDs with no config entry
     for serial in &lcd_serials {
         if !config.fans.iter().any(|f| f.serial == *serial) {
             eprintln!("Config: LCD {serial} has no config entry");
@@ -684,23 +773,75 @@ fn apply_config(state: &Arc<Mutex<DaemonState>>, config: &Config) {
             continue;
         }
         if !lcd_serials.iter().any(|s| s == &fan.serial) {
-            continue; // Skip config entries with no matching LCD
+            continue;
         }
         if let Some(video) = &fan.video {
             eprintln!(
                 "Config: playing {} on {} (fps={})",
-                video, fan.serial, fan.fps
+                video.path, fan.serial, video.fps
             );
             let req = Request::DisplayVideo {
-                path: video.clone(),
-                fps: fan.fps,
+                path: video.path.clone(),
+                fps: video.fps,
                 loop_video: true,
             };
             let resp = handle_request(state, req);
             if !resp.ok {
                 eprintln!("Config: failed to apply video: {:?}", resp.error);
             }
-            return; // Only apply first fan with video (single LCD shared)
+            return;
+        }
+    }
+}
+
+fn apply_config_wired(state: &Arc<Mutex<DaemonState>>, config: &Config) {
+    // For wired LCDs, match by port+lcd_index
+    let wired_positions: Vec<(u8, u8)> = {
+        let st = state.lock().unwrap();
+        match &st.lcd {
+            Lcd::Wired(wired) => wired.iter().map(|w| (w.port, w.lcd_index)).collect(),
+            _ => return,
+        }
+    };
+
+    for fan in &config.fans {
+        let Some(port) = fan.port else {
+            eprintln!("Config: skipping wired fan entry without port");
+            continue;
+        };
+        let Some(lcd_index) = fan.lcd_index else {
+            eprintln!("Config: skipping wired fan entry without lcd_index");
+            continue;
+        };
+
+        if !wired_positions
+            .iter()
+            .any(|&(p, i)| p == port && i == lcd_index)
+        {
+            eprintln!(
+                "Config: wired LCD port={} index={} not found",
+                port, lcd_index
+            );
+            continue;
+        }
+
+        if let Some(video) = &fan.video {
+            eprintln!(
+                "Config: playing {} on wired LCD port={} index={} (fps={})",
+                video.path, port, lcd_index, video.fps
+            );
+            // For now, apply video to all wired LCDs via the shared DisplayVideo path
+            // TODO: per-LCD video requires separate video loops
+            let req = Request::DisplayVideo {
+                path: video.path.clone(),
+                fps: video.fps,
+                loop_video: true,
+            };
+            let resp = handle_request(state, req);
+            if !resp.ok {
+                eprintln!("Config: failed to apply video: {:?}", resp.error);
+            }
+            return;
         }
     }
 }
