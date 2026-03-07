@@ -65,6 +65,26 @@ enum WirelessCommands {
         /// PWM value 0-100
         pwm: u8,
     },
+    /// Set LED effect on a device (by MAC address)
+    SetLed {
+        /// Device MAC address (e.g. "aa:bb:cc:dd:ee:ff")
+        mac: String,
+        /// Effect mode (0=off, 1=static, etc.)
+        #[arg(long, default_value_t = 1)]
+        mode: u8,
+        /// Brightness (0-4, default 4=full)
+        #[arg(long, default_value_t = 4)]
+        brightness: u8,
+        /// Animation speed (0-4)
+        #[arg(long, default_value_t = 0)]
+        speed: u8,
+        /// Direction (0-5)
+        #[arg(long, default_value_t = 0)]
+        direction: u8,
+        /// Colors as hex (e.g. "ff0000"), can repeat
+        #[arg(long = "color", value_name = "HEX")]
+        colors: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -357,6 +377,50 @@ fn main() -> anyhow::Result<()> {
                     let pwm_all = [pwm; 4];
                     controller.set_fan_pwm(target, &pwm_all)?;
                     println!("Set all fans on {mac} to PWM {pwm}");
+                }
+                WirelessCommands::SetLed {
+                    mac,
+                    mode,
+                    brightness,
+                    speed,
+                    direction,
+                    colors,
+                } => {
+                    if daemon_available() {
+                        let req = Request::SetLed {
+                            mac: mac.clone(),
+                            mode,
+                            brightness,
+                            speed,
+                            direction,
+                            colors: colors.clone(),
+                        };
+                        let resp = daemon_request(&req)?;
+                        if resp.ok {
+                            println!("OK — set LED on {mac}");
+                        } else if let Some(err) = resp.error {
+                            anyhow::bail!("{err}");
+                        }
+                    } else {
+                        controller.init()?;
+                        let rf_devices = controller.get_device_list()?;
+
+                        let target = rf_devices
+                            .iter()
+                            .find(|d| slv3h::format_mac(&d.mac) == mac)
+                            .ok_or_else(|| anyhow::anyhow!("Device {mac} not found"))?;
+
+                        let rgb_colors: Vec<(u8, u8, u8)> = colors
+                            .iter()
+                            .filter_map(|c| ipc::parse_hex_color(c))
+                            .collect();
+
+                        controller.set_led(target, &rgb_colors)?;
+                        println!(
+                            "Set LED on {mac}: mode={mode} brightness={brightness} speed={speed} colors={}",
+                            colors.join(",")
+                        );
+                    }
                 }
             }
         }

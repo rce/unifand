@@ -324,6 +324,117 @@ pub fn build_rf_clock_sync_packet(master_mac: &[u8; 6], cpu_info: &[u8]) -> [u8;
     rf
 }
 
+/// Maximum compressed RGB data per RF packet (bytes 20-239).
+const RGB_DATA_PER_PACKET: usize = 220;
+
+/// LEDs per SL wireless fan (26 per fan, confirmed via pcap).
+pub const LEDS_PER_FAN: usize = 26;
+
+/// Default number of frames for a static effect (70, confirmed via pcap).
+pub const STATIC_FRAMES: usize = 70;
+
+/// Build RF_RGB_SYNC (0x20) packet sequence for LED effects.
+///
+/// The wireless LED protocol sends pre-rendered, tinyuz-compressed RGB
+/// frame data as a multi-packet sequence:
+/// - Packet 0: metadata (data length, frame count, LED count, timing)
+/// - Packets 1..N: compressed RGB data chunks (220 bytes each)
+///
+/// Returns a list of 240-byte RF packets to send in order.
+pub fn build_rf_rgb_sync_packets(
+    target_mac: &[u8; 6],
+    master_mac: &[u8; 6],
+    effect_index: &[u8; 4],
+    compressed_data: &[u8],
+    total_frame: u16,
+    led_num: u8,
+    interval_ms: f64,
+) -> Vec<[u8; RF_PACKET_LEN]> {
+    let data_len = compressed_data.len();
+    let data_packets = (data_len + RGB_DATA_PER_PACKET - 1) / RGB_DATA_PER_PACKET;
+    let total_packet_count = (data_packets + 1) as u8; // +1 for metadata packet
+
+    let mut packets = Vec::new();
+
+    // Packet 0: metadata
+    let mut rf = [0u8; RF_PACKET_LEN];
+    rf[0] = RF_CMD;
+    rf[1] = RF_RGB_SYNC;
+    rf[2..8].copy_from_slice(target_mac);
+    rf[8..14].copy_from_slice(master_mac);
+    rf[14..18].copy_from_slice(effect_index);
+    rf[18] = 0; // packet_index = 0
+    rf[19] = total_packet_count;
+    // data_length (big-endian u32)
+    rf[20] = (data_len >> 24) as u8;
+    rf[21] = ((data_len >> 16) & 0xFF) as u8;
+    rf[22] = ((data_len >> 8) & 0xFF) as u8;
+    rf[23] = (data_len & 0xFF) as u8;
+    // rf[24] = 0 (reserved)
+    // total_frame (big-endian u16)
+    rf[25] = (total_frame >> 8) as u8;
+    rf[26] = (total_frame & 0xFF) as u8;
+    // led_num
+    rf[27] = led_num;
+    // interval (big-endian u16 integer part + fractional byte)
+    let interval_int = interval_ms as u16;
+    rf[32] = (interval_int >> 8) as u8;
+    rf[33] = (interval_int & 0xFF) as u8;
+    rf[34] = (interval_ms * 100.0 % 100.0) as u8;
+    // sub_interval = 0 (bytes 35-36)
+    // isOuterMatchMax = 0 (byte 37)
+    // total_sub_frame = 0 (bytes 38-39)
+    packets.push(rf);
+
+    // Packets 1..N: compressed data
+    let mut offset = 0;
+    let mut pkt_index: u8 = 1;
+    while offset < data_len {
+        let mut rf = [0u8; RF_PACKET_LEN];
+        rf[0] = RF_CMD;
+        rf[1] = RF_RGB_SYNC;
+        rf[2..8].copy_from_slice(target_mac);
+        rf[8..14].copy_from_slice(master_mac);
+        rf[14..18].copy_from_slice(effect_index);
+        rf[18] = pkt_index;
+        rf[19] = total_packet_count;
+        let chunk_len = RGB_DATA_PER_PACKET.min(data_len - offset);
+        rf[20..20 + chunk_len].copy_from_slice(&compressed_data[offset..offset + chunk_len]);
+        packets.push(rf);
+        offset += chunk_len;
+        pkt_index += 1;
+    }
+
+    packets
+}
+
+/// Render a static color effect as raw RGB data.
+///
+/// Returns (rgb_data, total_frames, led_num) for use with tinyuz compression.
+/// Layout: for each frame, for each LED: [R, G, B].
+pub fn render_static_rgb(colors: &[(u8, u8, u8)], fan_num: u8) -> Vec<u8> {
+    let led_num = LEDS_PER_FAN * fan_num as usize;
+    let total_frames = STATIC_FRAMES;
+    let mut data = Vec::with_capacity(led_num * 3 * total_frames);
+
+    for _ in 0..total_frames {
+        for led in 0..led_num {
+            // Distribute colors across LEDs (zone-based)
+            let color_idx = if colors.is_empty() {
+                0
+            } else {
+                led * colors.len() / led_num
+            };
+            let (r, g, b) = colors.get(color_idx).copied().unwrap_or((0, 0, 0));
+            data.push(r);
+            data.push(g);
+            data.push(b);
+        }
+    }
+
+    data
+}
+
 /// Build a reset packet.
 pub fn reset_packet() -> [u8; USB_PACKET_LEN] {
     let mut buf = [0u8; USB_PACKET_LEN];
@@ -424,6 +535,49 @@ mod tests {
         assert_eq!(rf[15], 8); // channel
         assert_eq!(rf[16], 1); // slave_index
         assert_eq!(&rf[17..21], &pwm);
+    }
+
+    #[test]
+    fn build_rf_rgb_sync_packets_format() {
+        use crate::protocol::tinyuz;
+
+        let target = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let master = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+        let effect_index = [0x01, 0x00, 0x00, 0x00];
+
+        // Generate compressed RGB data (1 fan, static red)
+        let rgb_data = render_static_rgb(&[(255, 0, 0)], 1);
+        let compressed = tinyuz::tuz_compress(&rgb_data, 4096);
+
+        let packets = build_rf_rgb_sync_packets(
+            &target,
+            &master,
+            &effect_index,
+            &compressed,
+            STATIC_FRAMES as u16,
+            LEDS_PER_FAN as u8,
+            60.0,
+        );
+
+        // Should have at least metadata + 1 data packet
+        assert!(packets.len() >= 2);
+
+        // Check metadata packet (index 0)
+        let meta = &packets[0];
+        assert_eq!(meta[0], RF_CMD);
+        assert_eq!(meta[1], RF_RGB_SYNC);
+        assert_eq!(&meta[2..8], &target);
+        assert_eq!(&meta[8..14], &master);
+        assert_eq!(&meta[14..18], &effect_index);
+        assert_eq!(meta[18], 0); // packet_index = 0
+        assert_eq!(meta[19], packets.len() as u8); // total_count
+
+        // Check data packet (index 1)
+        let data = &packets[1];
+        assert_eq!(data[0], RF_CMD);
+        assert_eq!(data[1], RF_RGB_SYNC);
+        assert_eq!(&data[14..18], &effect_index);
+        assert_eq!(data[18], 1); // packet_index = 1
     }
 
     #[test]

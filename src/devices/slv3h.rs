@@ -104,6 +104,69 @@ impl Slv3hController {
         Ok(())
     }
 
+    /// Set LED effect for a specific device via RF_RGB_SYNC.
+    ///
+    /// Renders a static color effect, compresses it with tinyuz,
+    /// and sends the multi-packet RF_RGB_SYNC sequence.
+    pub fn set_led(&self, device: &RfDeviceInfo, colors: &[(u8, u8, u8)]) -> Result<()> {
+        use crate::protocol::tinyuz;
+
+        let master_mac = self.master_info.as_ref().map(|m| m.mac).ok_or_else(|| {
+            crate::Error::InvalidResponse("not initialized — call init() first".into())
+        })?;
+
+        let fan_num = device.fan_num.max(1);
+        let led_num = (slv3h::LEDS_PER_FAN * fan_num as usize) as u8;
+
+        // Render static color frames
+        let rgb_data = slv3h::render_static_rgb(colors, fan_num);
+
+        // Compress with tinyuz (4KB dictionary, matching L-Connect)
+        let compressed = tinyuz::tuz_compress(&rgb_data, 4096);
+
+        eprintln!(
+            "LED: {} LEDs, {} frames, {} bytes raw → {} bytes compressed",
+            led_num,
+            slv3h::STATIC_FRAMES,
+            rgb_data.len(),
+            compressed.len()
+        );
+
+        // Generate a simple effect_index (incremented to trigger update)
+        let effect_index = [0x01, 0x00, 0x00, 0x00];
+
+        // Build multi-packet RF_RGB_SYNC sequence
+        let rf_packets = slv3h::build_rf_rgb_sync_packets(
+            &device.mac,
+            &master_mac,
+            &effect_index,
+            &compressed,
+            slv3h::STATIC_FRAMES as u16,
+            led_num,
+            60.0, // ~16fps interval (matches L-Connect pcap)
+        );
+
+        // Send each RF packet (fragmented into USB chunks)
+        for (i, rf) in rf_packets.iter().enumerate() {
+            let chunks = slv3h::fragment_rf_packet(rf, device.channel, device.rx_type);
+            for chunk in &chunks {
+                self.tx.write(chunk)?;
+            }
+            // Metadata packet (index 0) is sent 4 times with 20ms delay (per L-Connect)
+            if i == 0 {
+                for _ in 0..3 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    let chunks = slv3h::fragment_rf_packet(rf, device.channel, device.rx_type);
+                    for chunk in &chunks {
+                        self.tx.write(chunk)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Save configuration to all bound devices (broadcast).
     pub fn save_config(&self) -> Result<()> {
         let master_mac = self

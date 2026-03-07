@@ -23,6 +23,14 @@ pub enum Request {
         mac: String,
         pwm: u8,
     },
+    SetLed {
+        mac: String,
+        mode: u8,
+        brightness: u8,
+        speed: u8,
+        direction: u8,
+        colors: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,9 +147,12 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanConfig {
-    /// Wireless LCD serial (for wireless matching).
+    /// Wireless LCD serial (for LCD/video matching).
     #[serde(default)]
     pub serial: String,
+    /// Wireless fan MAC address (for LED matching, e.g. "26:70:85:e5:66:e1").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
     /// USB port number (for wired LCD matching).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u8>,
@@ -151,6 +162,9 @@ pub struct FanConfig {
     /// Video playback config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<VideoConfig>,
+    /// LED effect config (wireless only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led: Option<LedConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,4 +176,33 @@ pub struct VideoConfig {
 
 fn default_fps() -> u8 {
     20
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedConfig {
+    pub mode: u8,
+    #[serde(default = "default_brightness")]
+    pub brightness: u8,
+    #[serde(default)]
+    pub speed: u8,
+    #[serde(default)]
+    pub direction: u8,
+    #[serde(default)]
+    pub colors: Vec<String>,
+}
+
+fn default_brightness() -> u8 {
+    4
+}
+
+/// Parse hex color string (e.g. "ff0000") to (R, G, B).
+pub fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some((r, g, b))
 }

@@ -157,6 +157,21 @@ fn get_wireless_fan_status() -> Vec<WirelessFanState> {
 }
 
 fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
+    // Log incoming requests (skip Status to avoid spam)
+    match &req {
+        Request::Status => {}
+        other => eprintln!("IPC request: {other:?}"),
+    }
+    let resp = handle_request_inner(state, req);
+    if !resp.ok {
+        if let Some(err) = &resp.error {
+            eprintln!("IPC error: {err}");
+        }
+    }
+    resp
+}
+
+fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
     match req {
         Request::Status => {
             let st = state.lock().unwrap();
@@ -408,6 +423,49 @@ fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
                     st.display = DisplayState::default();
                     Response::ok()
                 }
+                Err(e) => Response::err(e.to_string()),
+            }
+        }
+        Request::SetLed {
+            mac,
+            mode: _,
+            brightness: _,
+            speed: _,
+            direction: _,
+            colors,
+        } => {
+            let rgb_colors: Vec<(u8, u8, u8)> = colors
+                .iter()
+                .filter_map(|c| ipc::parse_hex_color(c))
+                .collect();
+
+            let Ok(api) = hidapi::HidApi::new() else {
+                return Response::err("failed to open HID API");
+            };
+            let Ok(devices) = unifand::discover() else {
+                return Response::err("failed to discover devices");
+            };
+            let Some(hub_info) = devices.iter().find(|d| matches!(d.kind, DeviceKind::Slv3h))
+            else {
+                return Response::err("no SLV3H wireless hub found");
+            };
+
+            let Ok(mut controller) = Slv3hController::open(&api, hub_info) else {
+                return Response::err("failed to open SLV3H controller");
+            };
+            if let Err(e) = controller.init() {
+                return Response::err(format!("SLV3H init failed: {e}"));
+            }
+            let Ok(rf_devices) = controller.get_device_list() else {
+                return Response::err("failed to get device list");
+            };
+
+            let Some(target) = rf_devices.iter().find(|d| slv3h::format_mac(&d.mac) == mac) else {
+                return Response::err(format!("device {mac} not found"));
+            };
+
+            match controller.set_led(target, &rgb_colors) {
+                Ok(()) => Response::ok(),
                 Err(e) => Response::err(e.to_string()),
             }
         }
@@ -764,6 +822,28 @@ fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
     for serial in &lcd_serials {
         if !config.fans.iter().any(|f| f.serial == *serial) {
             eprintln!("Config: LCD {serial} has no config entry");
+        }
+    }
+
+    // Apply LED configs for wireless fans (by MAC)
+    for fan in &config.fans {
+        if let (Some(led), Some(mac)) = (&fan.led, &fan.mac) {
+            eprintln!(
+                "Config: setting LED on {} — mode={} brightness={} speed={} colors={:?}",
+                mac, led.mode, led.brightness, led.speed, led.colors
+            );
+            let req = Request::SetLed {
+                mac: mac.clone(),
+                mode: led.mode,
+                brightness: led.brightness,
+                speed: led.speed,
+                direction: led.direction,
+                colors: led.colors.clone(),
+            };
+            let resp = handle_request(state, req);
+            if !resp.ok {
+                eprintln!("Config: failed to apply LED: {:?}", resp.error);
+            }
         }
     }
 
