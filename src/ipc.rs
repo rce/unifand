@@ -67,25 +67,37 @@ impl Response {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub uptime_secs: u64,
-    pub wireless_lcds: Vec<WirelessLcdState>,
-    pub wired_lcds: Vec<WiredLcdState>,
     pub display: DisplayState,
-    pub wireless_fans: Vec<WirelessFanState>,
-    #[serde(default)]
-    pub config_controllers: Vec<ControllerConfig>,
-    #[serde(default)]
-    pub config_fans: Vec<FanConfig>,
+    pub controllers: Vec<ControllerStatus>,
+    pub fans: Vec<FanStatus>,
 }
 
+/// Merged controller status (config + live data).
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WirelessLcdState {
-    pub serial: Option<String>,
+pub struct ControllerStatus {
+    pub mac: String,
+    pub connected: bool,
+    pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pwm: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub led: Option<LedEffect>,
+    pub fans: Vec<FanReading>,
 }
 
+/// Merged fan/LCD status (config + live data).
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WiredLcdState {
-    pub port: u8,
-    pub lcd_index: u8,
+pub struct FanStatus {
+    pub serial: String,
+    pub connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoConfig>,
+    /// Wired LCD port (if wired).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u8>,
+    /// Wired LCD index (if wired).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lcd_index: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,14 +121,7 @@ impl Default for DisplayState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WirelessFanState {
-    pub mac: String,
-    pub fan_count: u8,
-    pub fans: Vec<FanReading>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanReading {
     pub rpm: u16,
     pub pwm: u8,

@@ -9,7 +9,8 @@ use unifand::device::DeviceKind;
 use unifand::devices::slv3h::Slv3hController;
 use unifand::devices::tl_lcd_wired::TlLcdWired;
 use unifand::ipc::{
-    self, Config, DaemonStatus, DisplayState, FanReading, Request, Response, WirelessFanState,
+    self, Config, ControllerStatus, DaemonStatus, DisplayState, FanReading, FanStatus, Request,
+    Response,
 };
 use unifand::protocol::lcd::{LcdControlSetting, LcdMode, ScreenRotation};
 use unifand::protocol::slv3h;
@@ -120,7 +121,13 @@ fn open_lcd() -> Lcd {
     Lcd::None
 }
 
-fn get_wireless_fan_status() -> Vec<WirelessFanState> {
+/// Live RF device info (MAC + fan readings).
+struct LiveDevice {
+    mac: String,
+    fans: Vec<FanReading>,
+}
+
+fn get_live_wireless_devices() -> Vec<LiveDevice> {
     let Ok(api) = hidapi::HidApi::new() else {
         return vec![];
     };
@@ -143,9 +150,8 @@ fn get_wireless_fan_status() -> Vec<WirelessFanState> {
 
     rf_devices
         .iter()
-        .map(|dev| WirelessFanState {
+        .map(|dev| LiveDevice {
             mac: slv3h::format_mac(&dev.mac),
-            fan_count: dev.fan_num,
             fans: (0..dev.fan_num as usize)
                 .filter(|&i| i < 4)
                 .map(|i| FanReading {
@@ -155,6 +161,97 @@ fn get_wireless_fan_status() -> Vec<WirelessFanState> {
                 .collect(),
         })
         .collect()
+}
+
+/// Build merged controller status from config + live data.
+fn build_controller_status(
+    config: &[ipc::ControllerConfig],
+    live: &[LiveDevice],
+) -> Vec<ControllerStatus> {
+    let mut result = Vec::new();
+
+    // Connected devices (with config lookup)
+    for dev in live {
+        let cfg = config.iter().find(|c| c.mac == dev.mac);
+        result.push(ControllerStatus {
+            mac: dev.mac.clone(),
+            connected: true,
+            configured: cfg.is_some(),
+            pwm: cfg.and_then(|c| c.pwm),
+            led: cfg.and_then(|c| c.led.clone()),
+            fans: dev.fans.clone(),
+        });
+    }
+
+    // Configured but not connected
+    for cfg in config {
+        if !live.iter().any(|d| d.mac == cfg.mac) {
+            result.push(ControllerStatus {
+                mac: cfg.mac.clone(),
+                connected: false,
+                configured: true,
+                pwm: cfg.pwm,
+                led: cfg.led.clone(),
+                fans: vec![],
+            });
+        }
+    }
+
+    result
+}
+
+/// Build merged fan/LCD status from config + live LCD data.
+fn build_fan_status(
+    config: &[ipc::FanConfig],
+    lcd_serials: &[String],
+    wired_lcds: &[WiredLcd],
+) -> Vec<FanStatus> {
+    let mut result = Vec::new();
+
+    // Connected wireless LCDs (with config lookup)
+    for serial in lcd_serials {
+        let cfg = config.iter().find(|c| c.serial == *serial);
+        result.push(FanStatus {
+            serial: serial.clone(),
+            connected: true,
+            video: cfg.and_then(|c| c.video.clone()),
+            port: None,
+            lcd_index: None,
+        });
+    }
+
+    // Connected wired LCDs (with config lookup)
+    for w in wired_lcds {
+        let cfg = config
+            .iter()
+            .find(|c| c.port == Some(w.port) && c.lcd_index == Some(w.lcd_index));
+        result.push(FanStatus {
+            serial: format!("wired:{}:{}", w.port, w.lcd_index),
+            connected: true,
+            video: cfg.and_then(|c| c.video.clone()),
+            port: Some(w.port),
+            lcd_index: Some(w.lcd_index),
+        });
+    }
+
+    // Configured but not connected
+    for cfg in config {
+        if cfg.serial.is_empty() {
+            continue;
+        }
+        let connected = lcd_serials.iter().any(|s| s == &cfg.serial);
+        if !connected {
+            result.push(FanStatus {
+                serial: cfg.serial.clone(),
+                connected: false,
+                video: cfg.video.clone(),
+                port: cfg.port,
+                lcd_index: cfg.lcd_index,
+            });
+        }
+    }
+
+    result
 }
 
 fn handle_request(state: &Arc<Mutex<DaemonState>>, req: Request) -> Response {
@@ -176,32 +273,27 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
     match req {
         Request::Status => {
             let st = state.lock().unwrap();
-            let wireless_fans = get_wireless_fan_status();
+            let live_devices = get_live_wireless_devices();
+
+            let lcd_serials: Vec<String> = match &st.lcd {
+                Lcd::Wireless(v) => v.iter().filter_map(|l| l.serial.clone()).collect(),
+                _ => vec![],
+            };
+            let wired_lcds_ref: &[WiredLcd] = match &st.lcd {
+                Lcd::Wired(v) => v,
+                _ => &[],
+            };
+
+            let controllers =
+                build_controller_status(&st.config_controllers, &live_devices);
+            let fans =
+                build_fan_status(&st.config_fans, &lcd_serials, wired_lcds_ref);
+
             Response::with_status(DaemonStatus {
                 uptime_secs: st.start_time.elapsed().as_secs(),
-                wireless_lcds: match &st.lcd {
-                    Lcd::Wireless(v) => v
-                        .iter()
-                        .map(|l| ipc::WirelessLcdState {
-                            serial: l.serial.clone(),
-                        })
-                        .collect(),
-                    _ => vec![],
-                },
-                wired_lcds: match &st.lcd {
-                    Lcd::Wired(v) => v
-                        .iter()
-                        .map(|w| ipc::WiredLcdState {
-                            port: w.port,
-                            lcd_index: w.lcd_index,
-                        })
-                        .collect(),
-                    _ => vec![],
-                },
                 display: st.display.clone(),
-                wireless_fans,
-                config_controllers: st.config_controllers.clone(),
-                config_fans: st.config_fans.clone(),
+                controllers,
+                fans,
             })
         }
         Request::DisplayImage { path } => {
