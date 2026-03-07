@@ -72,7 +72,7 @@ pub struct DaemonStatus {
     pub display: DisplayState,
     pub wireless_fans: Vec<WirelessFanState>,
     #[serde(default)]
-    pub config_devices: Vec<DeviceConfig>,
+    pub config_controllers: Vec<ControllerConfig>,
     #[serde(default)]
     pub config_fans: Vec<FanConfig>,
 }
@@ -139,19 +139,22 @@ pub fn config_path() -> std::path::PathBuf {
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// Wireless device configs (by MAC address) — LED effects.
+    /// Wireless controller configs (by MAC address) — PWM + LED effects.
     #[serde(default)]
-    pub devices: Vec<DeviceConfig>,
+    pub controllers: Vec<ControllerConfig>,
     /// Fan/LCD configs (by serial or port) — video playback.
     #[serde(default)]
     pub fans: Vec<FanConfig>,
 }
 
-/// Wireless device config (one per MAC address / RF device).
+/// Wireless controller config (one per MAC address / RF device).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceConfig {
+pub struct ControllerConfig {
     /// Wireless fan MAC address (e.g. "26:70:85:e5:66:e1").
     pub mac: String,
+    /// Fan PWM speed 0-100 (applied to all fans on this device).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pwm: Option<u8>,
     /// LED effect for all fans on this device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub led: Option<LedEffect>,

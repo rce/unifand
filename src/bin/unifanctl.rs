@@ -248,10 +248,13 @@ fn print_status(status: &DaemonStatus) {
         println!("  mac: {}", device.mac);
 
         let dev_config = status
-            .config_devices
+            .config_controllers
             .iter()
             .find(|c| c.mac == device.mac);
 
+        if let Some(pwm) = dev_config.and_then(|c| c.pwm) {
+            println!("  pwm: {pwm}");
+        }
         if let Some(led) = dev_config.and_then(|c| c.led.as_ref()) {
             println!("  led: {}", format_led_effect(led));
         }

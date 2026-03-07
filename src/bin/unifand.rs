@@ -34,7 +34,7 @@ struct DaemonState {
     display: DisplayState,
     lcd: Lcd,
     video_cancel: Option<std::sync::mpsc::Sender<()>>,
-    config_devices: Vec<ipc::DeviceConfig>,
+    config_controllers: Vec<ipc::ControllerConfig>,
     config_fans: Vec<ipc::FanConfig>,
 }
 
@@ -200,7 +200,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 },
                 display: st.display.clone(),
                 wireless_fans,
-                config_devices: st.config_devices.clone(),
+                config_controllers: st.config_controllers.clone(),
                 config_fans: st.config_fans.clone(),
             })
         }
@@ -719,7 +719,7 @@ fn reload_config(state: &Arc<Mutex<DaemonState>>, config_path: &Path) {
     state.lock().unwrap().stop_video();
     {
         let mut st = state.lock().unwrap();
-        st.config_devices = config.devices.clone();
+        st.config_controllers = config.controllers.clone();
         st.config_fans = config.fans.clone();
     }
     apply_config(state, &config);
@@ -819,8 +819,19 @@ fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
         }
     }
 
-    // Apply LED configs for wireless devices (by MAC)
-    for device in &config.devices {
+    // Apply device configs (PWM + LED) for wireless devices (by MAC)
+    for device in &config.controllers {
+        if let Some(pwm) = device.pwm {
+            eprintln!("Config: setting PWM on {} — {}", device.mac, pwm);
+            let req = Request::SetFanSpeed {
+                mac: device.mac.clone(),
+                pwm,
+            };
+            let resp = handle_request(state, req);
+            if !resp.ok {
+                eprintln!("Config: failed to apply PWM: {:?}", resp.error);
+            }
+        }
         if let Some(effect) = &device.led {
             eprintln!("Config: setting LED on {} — {:?}", device.mac, effect);
             let req = Request::SetLed {
@@ -929,7 +940,7 @@ fn main() -> anyhow::Result<()> {
         display: DisplayState::default(),
         lcd,
         video_cancel: None,
-        config_devices: vec![],
+        config_controllers: vec![],
         config_fans: vec![],
     }));
 
