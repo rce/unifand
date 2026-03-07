@@ -243,14 +243,19 @@ fn print_status(status: &DaemonStatus) {
 
     // Wireless devices + fans
     for (i, device) in status.wireless_fans.iter().enumerate() {
-        println!();
-        println!("Wireless Device #{i}");
-        println!("  mac: {}", device.mac);
-
         let dev_config = status
             .config_controllers
             .iter()
             .find(|c| c.mac == device.mac);
+
+        // Skip unconfigured devices here — they're shown below
+        if dev_config.is_none() {
+            continue;
+        }
+
+        println!();
+        println!("Wireless Device #{i}");
+        println!("  mac: {}", device.mac);
 
         if let Some(pwm) = dev_config.and_then(|c| c.pwm) {
             println!("  pwm: {pwm}");
@@ -282,6 +287,52 @@ fn print_status(status: &DaemonStatus) {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Connected but not configured controllers
+    for device in &status.wireless_fans {
+        let has_config = status.config_controllers.iter().any(|c| c.mac == device.mac);
+        if !has_config {
+            println!();
+            println!("Wireless Device (not configured)");
+            println!("  mac: {}", device.mac);
+            println!("  fans: {}", device.fans.len());
+        }
+    }
+
+    // Configured but not connected controllers
+    for ctrl in &status.config_controllers {
+        let connected = status.wireless_fans.iter().any(|d| d.mac == ctrl.mac);
+        if !connected {
+            println!();
+            println!("Wireless Device (not connected)");
+            println!("  mac: {}", ctrl.mac);
+            if let Some(pwm) = ctrl.pwm {
+                println!("  pwm: {pwm}");
+            }
+            if let Some(led) = &ctrl.led {
+                println!("  led: {}", format_led_effect(led));
+            }
+        }
+    }
+
+    // Configured but not connected fans
+    for fan in &status.config_fans {
+        if fan.serial.is_empty() {
+            continue;
+        }
+        let connected = status
+            .wireless_lcds
+            .iter()
+            .any(|l| l.serial.as_deref() == Some(&fan.serial));
+        if !connected {
+            println!();
+            println!("Fan (not connected)");
+            println!("  serial: {}", fan.serial);
+            if let Some(v) = &fan.video {
+                println!("  video: {} @ {}fps", v.path, v.fps);
             }
         }
     }
