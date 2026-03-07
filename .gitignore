@@ -8,3 +8,7 @@ extracted/
 *.mp4
 *.webm
 *.iso
+
+pkg/
+arch/pkg/
+arch/*.pkg.tar.zst
