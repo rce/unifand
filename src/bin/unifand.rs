@@ -58,6 +58,9 @@ fn open_lcd() -> Lcd {
             eprintln!("Found {} wireless LCD(s)", lcds.len());
             for (i, lcd) in lcds.iter().enumerate() {
                 eprintln!("  LCD {i}: serial={:?}", lcd.serial);
+                if let Err(e) = lcd.send_cmd(LcdCmd::Brightness, 100) {
+                    eprintln!("  LCD {i}: failed to set brightness: {e}");
+                }
             }
             return Lcd::Wireless(lcds);
         }
@@ -284,10 +287,8 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 _ => &[],
             };
 
-            let controllers =
-                build_controller_status(&st.config_controllers, &live_devices);
-            let fans =
-                build_fan_status(&st.config_fans, &lcd_serials, wired_lcds_ref);
+            let controllers = build_controller_status(&st.config_controllers, &live_devices);
+            let fans = build_fan_status(&st.config_fans, &lcd_serials, wired_lcds_ref);
 
             Response::with_status(DaemonStatus {
                 uptime_secs: st.start_time.elapsed().as_secs(),
