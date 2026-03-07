@@ -25,11 +25,7 @@ pub enum Request {
     },
     SetLed {
         mac: String,
-        mode: u8,
-        brightness: u8,
-        speed: u8,
-        direction: u8,
-        colors: Vec<String>,
+        effect: LedEffect,
     },
 }
 
@@ -164,7 +160,7 @@ pub struct FanConfig {
     pub video: Option<VideoConfig>,
     /// LED effect config (wireless only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub led: Option<LedConfig>,
+    pub led: Option<LedEffect>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,20 +175,24 @@ fn default_fps() -> u8 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedConfig {
-    pub mode: u8,
-    #[serde(default = "default_brightness")]
-    pub brightness: u8,
-    #[serde(default)]
-    pub speed: u8,
-    #[serde(default)]
-    pub direction: u8,
-    #[serde(default)]
-    pub colors: Vec<String>,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LedEffect {
+    Static {
+        color: String,
+    },
+    Breathing {
+        color: String,
+        #[serde(default = "default_led_speed")]
+        speed: u8,
+    },
+    Rainbow {
+        #[serde(default = "default_led_speed")]
+        speed: u8,
+    },
 }
 
-fn default_brightness() -> u8 {
-    4
+fn default_led_speed() -> u8 {
+    2
 }
 
 /// Parse hex color string (e.g. "ff0000") to (R, G, B).

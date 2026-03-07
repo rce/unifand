@@ -426,19 +426,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 Err(e) => Response::err(e.to_string()),
             }
         }
-        Request::SetLed {
-            mac,
-            mode: _,
-            brightness: _,
-            speed: _,
-            direction: _,
-            colors,
-        } => {
-            let rgb_colors: Vec<(u8, u8, u8)> = colors
-                .iter()
-                .filter_map(|c| ipc::parse_hex_color(c))
-                .collect();
-
+        Request::SetLed { mac, effect } => {
             let Ok(api) = hidapi::HidApi::new() else {
                 return Response::err("failed to open HID API");
             };
@@ -464,7 +452,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 return Response::err(format!("device {mac} not found"));
             };
 
-            match controller.set_led(target, &rgb_colors) {
+            match controller.set_led(target, &effect) {
                 Ok(()) => Response::ok(),
                 Err(e) => Response::err(e.to_string()),
             }
@@ -827,18 +815,11 @@ fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
 
     // Apply LED configs for wireless fans (by MAC)
     for fan in &config.fans {
-        if let (Some(led), Some(mac)) = (&fan.led, &fan.mac) {
-            eprintln!(
-                "Config: setting LED on {} — mode={} brightness={} speed={} colors={:?}",
-                mac, led.mode, led.brightness, led.speed, led.colors
-            );
+        if let (Some(effect), Some(mac)) = (&fan.led, &fan.mac) {
+            eprintln!("Config: setting LED on {} — {:?}", mac, effect);
             let req = Request::SetLed {
                 mac: mac.clone(),
-                mode: led.mode,
-                brightness: led.brightness,
-                speed: led.speed,
-                direction: led.direction,
-                colors: led.colors.clone(),
+                effect: effect.clone(),
             };
             let resp = handle_request(state, req);
             if !resp.ok {

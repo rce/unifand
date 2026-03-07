@@ -435,6 +435,89 @@ pub fn render_static_rgb(colors: &[(u8, u8, u8)], fan_num: u8) -> Vec<u8> {
     data
 }
 
+/// Number of frames for a breathing cycle (ramp up 85 + ramp down 85 = 170).
+pub const BREATHING_FRAMES: usize = 170;
+
+/// Render a breathing effect as raw RGB data.
+///
+/// Brightness ramps 0→255 over 85 frames, then 255→0 over 85 frames.
+/// Returns rgb_data for use with tinyuz compression.
+pub fn render_breathing_rgb(color: (u8, u8, u8), fan_num: u8) -> Vec<u8> {
+    let led_num = LEDS_PER_FAN * fan_num as usize;
+    let mut data = Vec::with_capacity(led_num * 3 * BREATHING_FRAMES);
+    let (r, g, b) = color;
+
+    for frame in 0..BREATHING_FRAMES {
+        // Brightness: 0→255 for first half, 255→0 for second half
+        let brightness = if frame < BREATHING_FRAMES / 2 {
+            (frame * 255 / (BREATHING_FRAMES / 2 - 1)) as u8
+        } else {
+            let down = frame - BREATHING_FRAMES / 2;
+            (255 - down * 255 / (BREATHING_FRAMES / 2 - 1)) as u8
+        };
+        let br = r as u16 * brightness as u16 / 255;
+        let bg = g as u16 * brightness as u16 / 255;
+        let bb = b as u16 * brightness as u16 / 255;
+
+        for _ in 0..led_num {
+            data.push(br as u8);
+            data.push(bg as u8);
+            data.push(bb as u8);
+        }
+    }
+
+    data
+}
+
+/// Number of hue steps for rainbow (full rotation).
+pub const RAINBOW_FRAMES: usize = 60;
+
+/// Convert HSV to RGB. h: 0-360, s: 0-255, v: 0-255.
+pub fn hsv_to_rgb(h: u16, s: u8, v: u8) -> (u8, u8, u8) {
+    if s == 0 {
+        return (v, v, v);
+    }
+    let h = (h % 360) as u32;
+    let s = s as u32;
+    let v = v as u32;
+    let region = h / 60;
+    let remainder = (h - region * 60) * 255 / 60;
+
+    let p = (v * (255 - s)) / 255;
+    let q = (v * (255 - (s * remainder) / 255)) / 255;
+    let t = (v * (255 - (s * (255 - remainder)) / 255)) / 255;
+
+    match region {
+        0 => (v as u8, t as u8, p as u8),
+        1 => (q as u8, v as u8, p as u8),
+        2 => (p as u8, v as u8, t as u8),
+        3 => (p as u8, q as u8, v as u8),
+        4 => (t as u8, p as u8, v as u8),
+        _ => (v as u8, p as u8, q as u8),
+    }
+}
+
+/// Render a rainbow effect as raw RGB data.
+///
+/// Each frame rotates the hue offset, distributing colors across LEDs.
+pub fn render_rainbow_rgb(fan_num: u8) -> Vec<u8> {
+    let led_num = LEDS_PER_FAN * fan_num as usize;
+    let mut data = Vec::with_capacity(led_num * 3 * RAINBOW_FRAMES);
+
+    for frame in 0..RAINBOW_FRAMES {
+        let hue_offset = (frame * 360 / RAINBOW_FRAMES) as u16;
+        for led in 0..led_num {
+            let hue = (hue_offset + (led as u16 * 360 / led_num as u16)) % 360;
+            let (r, g, b) = hsv_to_rgb(hue, 255, 255);
+            data.push(r);
+            data.push(g);
+            data.push(b);
+        }
+    }
+
+    data
+}
+
 /// Build a reset packet.
 pub fn reset_packet() -> [u8; USB_PACKET_LEN] {
     let mut buf = [0u8; USB_PACKET_LEN];

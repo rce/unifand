@@ -106,9 +106,10 @@ impl Slv3hController {
 
     /// Set LED effect for a specific device via RF_RGB_SYNC.
     ///
-    /// Renders a static color effect, compresses it with tinyuz,
+    /// Dispatches on the effect type, renders frames, compresses with tinyuz,
     /// and sends the multi-packet RF_RGB_SYNC sequence.
-    pub fn set_led(&mut self, device: &RfDeviceInfo, colors: &[(u8, u8, u8)]) -> Result<()> {
+    pub fn set_led(&mut self, device: &RfDeviceInfo, effect: &crate::ipc::LedEffect) -> Result<()> {
+        use crate::ipc::{LedEffect, parse_hex_color};
         use crate::protocol::tinyuz;
 
         let master_mac = self.master_info.as_ref().map(|m| m.mac).ok_or_else(|| {
@@ -118,22 +119,40 @@ impl Slv3hController {
         let fan_num = device.fan_num.max(1);
         let led_num = (slv3h::LEDS_PER_FAN * fan_num as usize) as u8;
 
-        // Render static color frames
-        let rgb_data = slv3h::render_static_rgb(colors, fan_num);
+        // Render frames and determine timing based on effect type
+        let (rgb_data, total_frames, interval_ms) = match effect {
+            LedEffect::Static { color } => {
+                let rgb = parse_hex_color(color).unwrap_or((255, 0, 255));
+                let data = slv3h::render_static_rgb(&[rgb], fan_num);
+                (data, slv3h::STATIC_FRAMES, 660.0)
+            }
+            LedEffect::Breathing { color, speed } => {
+                let rgb = parse_hex_color(color).unwrap_or((255, 0, 255));
+                let data = slv3h::render_breathing_rgb(rgb, fan_num);
+                // Speed 0=slowest, 4=fastest. Map to interval: 80ms(fast) to 200ms(slow)
+                let interval = 200.0 - (*speed as f64 * 30.0);
+                (data, slv3h::BREATHING_FRAMES, interval)
+            }
+            LedEffect::Rainbow { speed } => {
+                let data = slv3h::render_rainbow_rgb(fan_num);
+                let interval = 200.0 - (*speed as f64 * 30.0);
+                (data, slv3h::RAINBOW_FRAMES, interval)
+            }
+        };
 
         // Compress with tinyuz (4KB dictionary, matching L-Connect)
         let compressed = tinyuz::tuz_compress(&rgb_data, 4096);
 
         eprintln!(
-            "LED: {} LEDs, {} frames, {} bytes raw → {} bytes compressed",
+            "LED: {} LEDs, {} frames, {:.0}ms interval, {} bytes raw → {} bytes compressed",
             led_num,
-            slv3h::STATIC_FRAMES,
+            total_frames,
+            interval_ms,
             rgb_data.len(),
             compressed.len()
         );
 
         // Use timestamp-based effect_index so the fan always accepts the update
-        // (fans persist the index and ignore duplicates)
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -146,9 +165,9 @@ impl Slv3hController {
             &master_mac,
             &effect_index,
             &compressed,
-            slv3h::STATIC_FRAMES as u16,
+            total_frames as u16,
             led_num,
-            660.0, // interval_base(11.0) * 60 — static doesn't animate, but match L-Connect
+            interval_ms,
         );
 
         // Send each RF packet (fragmented into USB chunks)

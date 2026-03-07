@@ -69,22 +69,44 @@ enum WirelessCommands {
     SetLed {
         /// Device MAC address (e.g. "aa:bb:cc:dd:ee:ff")
         mac: String,
-        /// Effect mode (0=off, 1=static, etc.)
-        #[arg(long, default_value_t = 1)]
-        mode: u8,
-        /// Brightness (0-4, default 4=full)
-        #[arg(long, default_value_t = 4)]
-        brightness: u8,
-        /// Animation speed (0-4)
-        #[arg(long, default_value_t = 0)]
-        speed: u8,
-        /// Direction (0-5)
-        #[arg(long, default_value_t = 0)]
-        direction: u8,
-        /// Colors as hex (e.g. "ff0000"), can repeat
-        #[arg(long = "color", value_name = "HEX")]
-        colors: Vec<String>,
+        #[command(subcommand)]
+        effect: LedEffectCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum LedEffectCommand {
+    /// Set a static color (e.g. "static ff00ff")
+    Static {
+        /// Hex color (e.g. "ff00ff")
+        color: String,
+    },
+    /// Breathing effect — pulses a color (e.g. "breathing ff0000 --speed 3")
+    Breathing {
+        /// Hex color (e.g. "ff0000")
+        color: String,
+        /// Animation speed 0-4 (default 2)
+        #[arg(long, default_value_t = 2)]
+        speed: u8,
+    },
+    /// Rainbow effect — rotating hue across LEDs
+    Rainbow {
+        /// Animation speed 0-4 (default 2)
+        #[arg(long, default_value_t = 2)]
+        speed: u8,
+    },
+}
+
+impl LedEffectCommand {
+    fn into_led_effect(self) -> ipc::LedEffect {
+        match self {
+            LedEffectCommand::Static { color } => ipc::LedEffect::Static { color },
+            LedEffectCommand::Breathing { color, speed } => {
+                ipc::LedEffect::Breathing { color, speed }
+            }
+            LedEffectCommand::Rainbow { speed } => ipc::LedEffect::Rainbow { speed },
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -378,22 +400,12 @@ fn main() -> anyhow::Result<()> {
                     controller.set_fan_pwm(target, &pwm_all)?;
                     println!("Set all fans on {mac} to PWM {pwm}");
                 }
-                WirelessCommands::SetLed {
-                    mac,
-                    mode,
-                    brightness,
-                    speed,
-                    direction,
-                    colors,
-                } => {
+                WirelessCommands::SetLed { mac, effect } => {
+                    let led_effect = effect.into_led_effect();
                     if daemon_available() {
                         let req = Request::SetLed {
                             mac: mac.clone(),
-                            mode,
-                            brightness,
-                            speed,
-                            direction,
-                            colors: colors.clone(),
+                            effect: led_effect,
                         };
                         let resp = daemon_request(&req)?;
                         if resp.ok {
@@ -410,16 +422,8 @@ fn main() -> anyhow::Result<()> {
                             .find(|d| slv3h::format_mac(&d.mac) == mac)
                             .ok_or_else(|| anyhow::anyhow!("Device {mac} not found"))?;
 
-                        let rgb_colors: Vec<(u8, u8, u8)> = colors
-                            .iter()
-                            .filter_map(|c| ipc::parse_hex_color(c))
-                            .collect();
-
-                        controller.set_led(target, &rgb_colors)?;
-                        println!(
-                            "Set LED on {mac}: mode={mode} brightness={brightness} speed={speed} colors={}",
-                            colors.join(",")
-                        );
+                        controller.set_led(target, &led_effect)?;
+                        println!("Set LED on {mac}: {:?}", led_effect);
                     }
                 }
             }
