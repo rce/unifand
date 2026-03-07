@@ -330,8 +330,8 @@ const RGB_DATA_PER_PACKET: usize = 220;
 /// LEDs per SL wireless fan (26 per fan, confirmed via pcap).
 pub const LEDS_PER_FAN: usize = 26;
 
-/// Default number of frames for a static effect (70, confirmed via pcap).
-pub const STATIC_FRAMES: usize = 70;
+/// Default number of frames for a static effect (30 per Slv3Mode3 in L-Connect).
+pub const STATIC_FRAMES: usize = 30;
 
 /// Build RF_RGB_SYNC (0x20) packet sequence for LED effects.
 ///

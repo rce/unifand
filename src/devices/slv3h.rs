@@ -108,7 +108,7 @@ impl Slv3hController {
     ///
     /// Renders a static color effect, compresses it with tinyuz,
     /// and sends the multi-packet RF_RGB_SYNC sequence.
-    pub fn set_led(&self, device: &RfDeviceInfo, colors: &[(u8, u8, u8)]) -> Result<()> {
+    pub fn set_led(&mut self, device: &RfDeviceInfo, colors: &[(u8, u8, u8)]) -> Result<()> {
         use crate::protocol::tinyuz;
 
         let master_mac = self.master_info.as_ref().map(|m| m.mac).ok_or_else(|| {
@@ -132,8 +132,13 @@ impl Slv3hController {
             compressed.len()
         );
 
-        // Generate a simple effect_index (incremented to trigger update)
-        let effect_index = [0x01, 0x00, 0x00, 0x00];
+        // Use timestamp-based effect_index so the fan always accepts the update
+        // (fans persist the index and ignore duplicates)
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let effect_index = ts.to_le_bytes();
 
         // Build multi-packet RF_RGB_SYNC sequence
         let rf_packets = slv3h::build_rf_rgb_sync_packets(
@@ -143,7 +148,7 @@ impl Slv3hController {
             &compressed,
             slv3h::STATIC_FRAMES as u16,
             led_num,
-            60.0, // ~16fps interval (matches L-Connect pcap)
+            660.0, // interval_base(11.0) * 60 — static doesn't animate, but match L-Connect
         );
 
         // Send each RF packet (fragmented into USB chunks)
