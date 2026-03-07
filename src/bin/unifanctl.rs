@@ -223,28 +223,43 @@ fn daemon_available() -> bool {
     ipc::socket_path().exists()
 }
 
+fn format_led_effect(effect: &ipc::LedEffect) -> String {
+    match effect {
+        ipc::LedEffect::Static { color } => format!("static #{color}"),
+        ipc::LedEffect::Breathing { color, speed } => {
+            format!("breathing #{color} speed={speed}")
+        }
+        ipc::LedEffect::Rainbow { speed } => format!("rainbow speed={speed}"),
+    }
+}
+
 fn print_status(status: &DaemonStatus) {
-    // Summary line
     let wireless_fan_count: usize = status.wireless_fans.iter().map(|r| r.fans.len()).sum();
     println!(
-        "Wireless Receivers: {}, Fans: {}",
-        status.wireless_fans.len(),
-        wireless_fan_count
+        "Wireless Fans: {}, Wired Fans: {}",
+        wireless_fan_count,
+        status.wired_lcds.len()
     );
-    println!("Wired Fans: {}", status.wired_lcds.len());
 
-    // Wireless receivers + fans
+    // Wireless devices + fans
     for (i, device) in status.wireless_fans.iter().enumerate() {
         println!();
-        println!("Wireless Receiver #{i}");
+        println!("Wireless Device #{i}");
         println!("  mac: {}", device.mac);
+
+        let dev_config = status
+            .config_devices
+            .iter()
+            .find(|c| c.mac == device.mac);
+
+        if let Some(led) = dev_config.and_then(|c| c.led.as_ref()) {
+            println!("  led: {}", format_led_effect(led));
+        }
 
         for (j, f) in device.fans.iter().enumerate() {
             println!();
             println!("  Fan #{j}");
 
-            // Find config for this fan's LCD — match by index into wireless_lcds
-            // (wireless fans and LCDs pair by position)
             let lcd = status.wireless_lcds.get(i * device.fans.len() + j);
             if let Some(lcd) = lcd {
                 if let Some(serial) = &lcd.serial {

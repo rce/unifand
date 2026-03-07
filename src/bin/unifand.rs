@@ -34,6 +34,7 @@ struct DaemonState {
     display: DisplayState,
     lcd: Lcd,
     video_cancel: Option<std::sync::mpsc::Sender<()>>,
+    config_devices: Vec<ipc::DeviceConfig>,
     config_fans: Vec<ipc::FanConfig>,
 }
 
@@ -199,6 +200,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 },
                 display: st.display.clone(),
                 wireless_fans,
+                config_devices: st.config_devices.clone(),
                 config_fans: st.config_fans.clone(),
             })
         }
@@ -715,7 +717,11 @@ fn reload_config(state: &Arc<Mutex<DaemonState>>, config_path: &Path) {
     };
 
     state.lock().unwrap().stop_video();
-    state.lock().unwrap().config_fans = config.fans.clone();
+    {
+        let mut st = state.lock().unwrap();
+        st.config_devices = config.devices.clone();
+        st.config_fans = config.fans.clone();
+    }
     apply_config(state, &config);
     eprintln!("Config reloaded from {}", config_path.display());
 }
@@ -813,12 +819,12 @@ fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
         }
     }
 
-    // Apply LED configs for wireless fans (by MAC)
-    for fan in &config.fans {
-        if let (Some(effect), Some(mac)) = (&fan.led, &fan.mac) {
-            eprintln!("Config: setting LED on {} — {:?}", mac, effect);
+    // Apply LED configs for wireless devices (by MAC)
+    for device in &config.devices {
+        if let Some(effect) = &device.led {
+            eprintln!("Config: setting LED on {} — {:?}", device.mac, effect);
             let req = Request::SetLed {
-                mac: mac.clone(),
+                mac: device.mac.clone(),
                 effect: effect.clone(),
             };
             let resp = handle_request(state, req);
@@ -923,6 +929,7 @@ fn main() -> anyhow::Result<()> {
         display: DisplayState::default(),
         lcd,
         video_cancel: None,
+        config_devices: vec![],
         config_fans: vec![],
     }));
 

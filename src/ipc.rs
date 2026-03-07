@@ -72,6 +72,8 @@ pub struct DaemonStatus {
     pub display: DisplayState,
     pub wireless_fans: Vec<WirelessFanState>,
     #[serde(default)]
+    pub config_devices: Vec<DeviceConfig>,
+    #[serde(default)]
     pub config_fans: Vec<FanConfig>,
 }
 
@@ -137,18 +139,30 @@ pub fn config_path() -> std::path::PathBuf {
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    /// Wireless device configs (by MAC address) — LED effects.
+    #[serde(default)]
+    pub devices: Vec<DeviceConfig>,
+    /// Fan/LCD configs (by serial or port) — video playback.
     #[serde(default)]
     pub fans: Vec<FanConfig>,
 }
 
+/// Wireless device config (one per MAC address / RF device).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceConfig {
+    /// Wireless fan MAC address (e.g. "26:70:85:e5:66:e1").
+    pub mac: String,
+    /// LED effect for all fans on this device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led: Option<LedEffect>,
+}
+
+/// Fan/LCD config (one per physical fan with LCD).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanConfig {
-    /// Wireless LCD serial (for LCD/video matching).
+    /// Wireless LCD serial (for wireless LCD matching).
     #[serde(default)]
     pub serial: String,
-    /// Wireless fan MAC address (for LED matching, e.g. "26:70:85:e5:66:e1").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mac: Option<String>,
     /// USB port number (for wired LCD matching).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u8>,
@@ -158,9 +172,6 @@ pub struct FanConfig {
     /// Video playback config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<VideoConfig>,
-    /// LED effect config (wireless only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub led: Option<LedEffect>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
