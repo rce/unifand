@@ -256,9 +256,17 @@ fn print_status(status: &DaemonStatus) {
 
     for fan in &status.fans {
         println!();
-        let tag = if fan.connected { "" } else { " (not connected)" };
+        let tag = if fan.connected {
+            ""
+        } else {
+            " (not connected)"
+        };
         if let Some(port) = fan.port {
-            println!("Wired Fan port={} index={}{tag}", port, fan.lcd_index.unwrap_or(0));
+            println!(
+                "Wired Fan port={} index={}{tag}",
+                port,
+                fan.lcd_index.unwrap_or(0)
+            );
         } else {
             println!("Fan {}{tag}", fan.serial);
         }

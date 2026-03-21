@@ -67,7 +67,6 @@ impl Response {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub uptime_secs: u64,
-    pub display: DisplayState,
     pub controllers: Vec<ControllerStatus>,
     pub fans: Vec<FanStatus>,
 }
@@ -98,27 +97,6 @@ pub struct FanStatus {
     /// Wired LCD index (if wired).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lcd_index: Option<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DisplayState {
-    pub mode: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fps: Option<u8>,
-    pub looping: bool,
-}
-
-impl Default for DisplayState {
-    fn default() -> Self {
-        Self {
-            mode: "idle".into(),
-            source: None,
-            fps: None,
-            looping: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

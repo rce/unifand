@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -9,8 +10,7 @@ use unifand::device::DeviceKind;
 use unifand::devices::slv3h::Slv3hController;
 use unifand::devices::tl_lcd_wired::TlLcdWired;
 use unifand::ipc::{
-    self, Config, ControllerStatus, DaemonStatus, DisplayState, FanReading, FanStatus, Request,
-    Response,
+    self, Config, ControllerStatus, DaemonStatus, FanReading, FanStatus, Request, Response,
 };
 use unifand::protocol::lcd::{LcdControlSetting, LcdMode, ScreenRotation};
 use unifand::protocol::slv3h;
@@ -23,30 +23,35 @@ struct WiredLcd {
     lcd_index: u8,
 }
 
+/// A wireless LCD wrapped for shared access across threads.
+type SharedLcd = Arc<Mutex<LcdTransport>>;
+
 /// Which LCD type the daemon owns.
 enum Lcd {
-    Wireless(Vec<LcdTransport>),
+    Wireless(Vec<SharedLcd>),
     Wired(Vec<WiredLcd>),
     None,
 }
 
 struct DaemonState {
     start_time: Instant,
-    display: DisplayState,
     lcd: Lcd,
-    video_cancel: Option<std::sync::mpsc::Sender<()>>,
+    /// Per-LCD video cancel channels, keyed by serial.
+    video_cancels: HashMap<String, std::sync::mpsc::Sender<()>>,
     config_controllers: Vec<ipc::ControllerConfig>,
     config_fans: Vec<ipc::FanConfig>,
 }
 
 impl DaemonState {
-    fn stop_video(&mut self) {
-        if let Some(tx) = self.video_cancel.take() {
+    fn stop_all_videos(&mut self) {
+        for (_, tx) in self.video_cancels.drain() {
             let _ = tx.send(());
         }
-        // Only reset display state if we were actually playing video
-        if self.display.mode == "video" {
-            self.display = DisplayState::default();
+    }
+
+    fn stop_video(&mut self, serial: &str) {
+        if let Some(tx) = self.video_cancels.remove(serial) {
+            let _ = tx.send(());
         }
     }
 }
@@ -62,7 +67,11 @@ fn open_lcd() -> Lcd {
                     eprintln!("  LCD {i}: failed to set brightness: {e}");
                 }
             }
-            return Lcd::Wireless(lcds);
+            let shared: Vec<SharedLcd> = lcds
+                .into_iter()
+                .map(|l| Arc::new(Mutex::new(l)))
+                .collect();
+            return Lcd::Wireless(shared);
         }
     }
 
@@ -279,7 +288,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
             let live_devices = get_live_wireless_devices();
 
             let lcd_serials: Vec<String> = match &st.lcd {
-                Lcd::Wireless(v) => v.iter().filter_map(|l| l.serial.clone()).collect(),
+                Lcd::Wireless(v) => v.iter().filter_map(|l| l.lock().unwrap().serial.clone()).collect(),
                 _ => vec![],
             };
             let wired_lcds_ref: &[WiredLcd] = match &st.lcd {
@@ -292,14 +301,13 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
 
             Response::with_status(DaemonStatus {
                 uptime_secs: st.start_time.elapsed().as_secs(),
-                display: st.display.clone(),
                 controllers,
                 fans,
             })
         }
         Request::DisplayImage { path } => {
             let mut st = state.lock().unwrap();
-            st.stop_video();
+            st.stop_all_videos();
 
             let jpg_data = match convert_image_to_jpg(&path) {
                 Ok(d) => d,
@@ -310,7 +318,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 Lcd::Wireless(screens) => {
                     let mut r = Ok(());
                     for w in screens {
-                        if let Err(e) = w.push_jpg(&jpg_data) {
+                        if let Err(e) = w.lock().unwrap().push_jpg(&jpg_data) {
                             r = Err(e);
                         }
                     }
@@ -339,79 +347,49 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
             };
 
             match result {
-                Ok(()) => {
-                    st.display = DisplayState {
-                        mode: "image".into(),
-                        source: Some(path),
-                        fps: None,
-                        looping: false,
-                    };
-                    Response::ok()
-                }
+                Ok(()) => Response::ok(),
                 Err(e) => Response::err(e.to_string()),
             }
         }
         Request::DisplayVideo {
             path,
             fps,
-            loop_video,
+            loop_video: _,
         } => {
             if fps > 60 {
                 return Response::err("FPS too high (max 60)");
             }
 
             let mut st = state.lock().unwrap();
-            st.stop_video();
+            st.stop_all_videos();
 
-            // Set frame rate on LCD
-            let setup_result = match &st.lcd {
-                Lcd::Wireless(screens) => {
-                    let mut r = Ok(());
-                    for w in screens {
-                        if let Err(e) = w.send_cmd(LcdCmd::SetFrameRate, fps) {
-                            r = Err(e);
+            // Collect LCD refs before mutating state
+            let lcds: Vec<(String, SharedLcd)> = match &st.lcd {
+                Lcd::Wireless(screens) => screens
+                    .iter()
+                    .map(|lcd| {
+                        let l = lcd.lock().unwrap();
+                        if let Err(e) = l.send_cmd(LcdCmd::SetFrameRate, fps) {
+                            eprintln!("Failed to set frame rate: {e}");
                         }
-                    }
-                    r
-                }
-                Lcd::Wired(wired) => {
-                    let mut r = Ok(());
-                    for w in wired {
-                        if let Err(e) = w.lcd.set_control(&LcdControlSetting {
-                            mode: LcdMode::ShowJpg,
-                            jpg_index: 0,
-                            brightness: 100,
-                            video_fps: fps,
-                            rotation: ScreenRotation::Deg0,
-                            enable_test: false,
-                            test_color: (0, 0, 0),
-                        }) {
-                            r = Err(e);
-                        }
-                    }
-                    r
+                        let serial = l.serial.clone().unwrap_or_default();
+                        (serial, Arc::clone(lcd))
+                    })
+                    .collect(),
+                Lcd::Wired(_) => {
+                    return Response::err("per-LCD video not yet supported for wired LCDs");
                 }
                 Lcd::None => return Response::err("no LCD connected"),
             };
 
-            if let Err(e) = setup_result {
-                return Response::err(e.to_string());
+            for (serial, lcd) in lcds {
+                let (tx, rx) = std::sync::mpsc::channel();
+                st.video_cancels.insert(serial.clone(), tx);
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    video_loop_wireless(lcd, serial, path, fps, rx);
+                });
             }
-
-            st.display = DisplayState {
-                mode: "video".into(),
-                source: Some(path.clone()),
-                fps: Some(fps),
-                looping: loop_video,
-            };
-
-            let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
-            st.video_cancel = Some(cancel_tx);
-
-            let state_clone = Arc::clone(state);
-            std::thread::spawn(move || {
-                video_loop(&state_clone, &path, fps, loop_video, cancel_rx);
-            });
 
             Response::ok()
         }
@@ -421,7 +399,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 Lcd::Wireless(screens) => {
                     let mut r = Ok(());
                     for w in screens {
-                        if let Err(e) = w.send_cmd(LcdCmd::Brightness, level) {
+                        if let Err(e) = w.lock().unwrap().send_cmd(LcdCmd::Brightness, level) {
                             r = Err(e);
                         }
                     }
@@ -460,7 +438,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                     }
                     let mut r = Ok(());
                     for w in screens {
-                        if let Err(e) = w.send_cmd(LcdCmd::Rotate, rotation as u8) {
+                        if let Err(e) = w.lock().unwrap().send_cmd(LcdCmd::Rotate, rotation as u8) {
                             r = Err(e);
                         }
                     }
@@ -499,12 +477,12 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
         }
         Request::DisplayReset => {
             let mut st = state.lock().unwrap();
-            st.stop_video();
+            st.stop_all_videos();
             let result = match &st.lcd {
                 Lcd::Wireless(screens) => {
                     let mut r = Ok(());
                     for w in screens {
-                        if let Err(e) = w.send_cmd_bare(LcdCmd::Reboot) {
+                        if let Err(e) = w.lock().unwrap().send_cmd_bare(LcdCmd::Reboot) {
                             r = Err(e);
                         }
                     }
@@ -514,10 +492,7 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
                 Lcd::None => return Response::err("no LCD connected"),
             };
             match result {
-                Ok(()) => {
-                    st.display = DisplayState::default();
-                    Response::ok()
-                }
+                Ok(()) => Response::ok(),
                 Err(e) => Response::err(e.to_string()),
             }
         }
@@ -587,11 +562,12 @@ fn handle_request_inner(state: &Arc<Mutex<DaemonState>>, req: Request) -> Respon
     }
 }
 
-fn video_loop(
-    state: &Arc<Mutex<DaemonState>>,
-    path: &str,
+/// Video loop for a single wireless LCD.
+fn video_loop_wireless(
+    lcd: SharedLcd,
+    serial: String,
+    path: String,
     fps: u8,
-    loop_video: bool,
     cancel: std::sync::mpsc::Receiver<()>,
 ) {
     let frame_duration = std::time::Duration::from_millis(1000 / fps as u64);
@@ -600,7 +576,7 @@ fn video_loop(
         let mut child = match Command::new("ffmpeg")
             .args([
                 "-i",
-                path,
+                &path,
                 "-vf",
                 "scale=400:400:force_original_aspect_ratio=increase,crop=400:400",
                 "-r",
@@ -618,17 +594,15 @@ fn video_loop(
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Failed to spawn ffmpeg: {e}");
+                eprintln!("Failed to spawn ffmpeg for {serial}: {e}");
                 break;
             }
         };
 
         let stdout = child.stdout.take().unwrap();
         let mut reader = std::io::BufReader::new(stdout);
-        let mut frame_count: u64 = 0;
 
         loop {
-            // Check for cancellation
             if cancel.try_recv().is_ok() {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -638,40 +612,10 @@ fn video_loop(
             let frame_start = Instant::now();
             match read_jpeg_frame(&mut reader) {
                 Ok(frame) => {
-                    let st = state.lock().unwrap();
-                    let result = match &st.lcd {
-                        Lcd::Wireless(screens) => {
-                            let mut r = Ok(());
-                            for w in screens {
-                                if let Err(e) = w.push_jpg(&frame) {
-                                    r = Err(e);
-                                }
-                            }
-                            r
-                        }
-                        Lcd::Wired(wired) => {
-                            let mut r = Ok(());
-                            for w in wired {
-                                let res = if frame_count == 0 {
-                                    w.lcd.send_jpg(&frame)
-                                } else {
-                                    w.lcd.send_sync_jpg(&frame)
-                                };
-                                if let Err(e) = res {
-                                    r = Err(e);
-                                }
-                            }
-                            r
-                        }
-                        Lcd::None => break,
-                    };
-                    drop(st);
-
-                    if let Err(e) = result {
-                        eprintln!("Error pushing frame: {e}");
+                    if let Err(e) = lcd.lock().unwrap().push_jpg(&frame) {
+                        eprintln!("Error pushing frame to {serial}: {e}");
                         break;
                     }
-                    frame_count += 1;
 
                     let elapsed = frame_start.elapsed();
                     if elapsed < frame_duration {
@@ -684,20 +628,11 @@ fn video_loop(
 
         let _ = child.wait();
 
-        if !loop_video {
-            break;
-        }
-
         // Check cancel before looping
         if cancel.try_recv().is_ok() {
             return;
         }
     }
-
-    // Video ended naturally — update state
-    let mut st = state.lock().unwrap();
-    st.display = DisplayState::default();
-    st.video_cancel = None;
 }
 
 fn convert_image_to_jpg(path: &str) -> anyhow::Result<Vec<u8>> {
@@ -809,7 +744,7 @@ fn reload_config(state: &Arc<Mutex<DaemonState>>, config_path: &Path) {
         }
     };
 
-    state.lock().unwrap().stop_video();
+    state.lock().unwrap().stop_all_videos();
     {
         let mut st = state.lock().unwrap();
         st.config_controllers = config.controllers.clone();
@@ -889,13 +824,21 @@ fn apply_config(state: &Arc<Mutex<DaemonState>>, config: &Config) {
 }
 
 fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
-    let lcd_serials: Vec<String> = {
+    // Collect LCD serials and Arc references
+    let lcd_entries: Vec<(String, SharedLcd)> = {
         let st = state.lock().unwrap();
         match &st.lcd {
-            Lcd::Wireless(lcds) => lcds.iter().filter_map(|l| l.serial.clone()).collect(),
+            Lcd::Wireless(lcds) => lcds
+                .iter()
+                .filter_map(|l| {
+                    let serial = l.lock().unwrap().serial.clone()?;
+                    Some((serial, Arc::clone(l)))
+                })
+                .collect(),
             _ => vec![],
         }
     };
+    let lcd_serials: Vec<String> = lcd_entries.iter().map(|(s, _)| s.clone()).collect();
 
     for fan in &config.fans {
         if !fan.serial.is_empty() && !lcd_serials.iter().any(|s| s == &fan.serial) {
@@ -938,29 +881,40 @@ fn apply_config_wireless(state: &Arc<Mutex<DaemonState>>, config: &Config) {
         }
     }
 
+    // Apply per-LCD video configs
     for fan in &config.fans {
         if fan.serial.is_empty() {
             eprintln!("Config: skipping fan entry with empty serial");
             continue;
         }
-        if !lcd_serials.iter().any(|s| s == &fan.serial) {
+        let Some((_, lcd)) = lcd_entries.iter().find(|(s, _)| s == &fan.serial) else {
             continue;
-        }
+        };
         if let Some(video) = &fan.video {
             eprintln!(
                 "Config: playing {} on {} (fps={})",
                 video.path, fan.serial, video.fps
             );
-            let req = Request::DisplayVideo {
-                path: video.path.clone(),
-                fps: video.fps,
-                loop_video: true,
-            };
-            let resp = handle_request(state, req);
-            if !resp.ok {
-                eprintln!("Config: failed to apply video: {:?}", resp.error);
+
+            // Set frame rate on this LCD
+            if let Err(e) = lcd.lock().unwrap().send_cmd(LcdCmd::SetFrameRate, video.fps) {
+                eprintln!("Failed to set frame rate on {}: {e}", fan.serial);
             }
-            return;
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            state
+                .lock()
+                .unwrap()
+                .video_cancels
+                .insert(fan.serial.clone(), tx);
+
+            let lcd = Arc::clone(lcd);
+            let serial = fan.serial.clone();
+            let path = video.path.clone();
+            let fps = video.fps;
+            std::thread::spawn(move || {
+                video_loop_wireless(lcd, serial, path, fps, rx);
+            });
         }
     }
 }
@@ -1030,9 +984,8 @@ fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(Mutex::new(DaemonState {
         start_time: Instant::now(),
-        display: DisplayState::default(),
         lcd,
-        video_cancel: None,
+        video_cancels: HashMap::new(),
         config_controllers: vec![],
         config_fans: vec![],
     }));
